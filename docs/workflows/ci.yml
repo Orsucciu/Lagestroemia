@@ -1,0 +1,28 @@
+# Build & test on every push / PR.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter doctor -v
+      - run: flutter pub get
+      - run: flutter gen-l10n
+      - run: flutter analyze --fatal=info
+      - run: flutter test
