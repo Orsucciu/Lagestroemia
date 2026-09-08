@@ -1,0 +1,29 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+build/
+**/generated_plugin_registrant.dart
+**/ephemeral/
+**/.symlinks/
+
+# Flutter SDK local installs (we keep Flutter outside the repo)
+flutter/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+
+# Generated
+*.g.dart
+*.freezed.dart
+
+# OS files
+Thumbs.db
+.DS_Store

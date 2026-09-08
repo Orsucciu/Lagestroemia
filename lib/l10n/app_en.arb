@@ -1,0 +1,114 @@
+{
+  "@@locale": "en",
+  "appName": "Lagestroemia",
+  "@appName": {
+    "description": "Application name shown in title bars and splash."
+  },
+
+  "navChats": "Chats",
+  "@navChats": {"description": "Tab label for the chat list."},
+  "navLibrary": "Library",
+  "@navLibrary": {"description": "Tab label for the local library (documents + artifacts)."},
+  "navPrompts": "Prompts",
+  "@navPrompts": {"description": "Tab label for the system prompts library."},
+  "navSettings": "Settings",
+  "@navSettings": {"description": "Tab label for settings."},
+
+  "commonCancel": "Cancel",
+  "commonSave": "Save",
+  "commonDelete": "Delete",
+  "commonRename": "Rename",
+  "commonOk": "OK",
+  "commonRetry": "Retry",
+  "commonLoading": "Loading…",
+  "commonEmpty": "Nothing here yet.",
+  "commonError": "Something went wrong.",
+  "commonClose": "Close",
+  "commonCopy": "Copy",
+  "commonSearch": "Search",
+  "commonYes": "Yes",
+  "commonNo": "No",
+  "commonConfirmDelete": "Are you sure you want to delete this?",
+  "commonCreated": "Created",
+  "commonUpdated": "Updated",
+  "commonTitle": "Title",
+  "commonDescription": "Description",
+
+  "splashLoading": "Starting up…",
+  "@splashLoading": {"description": "Shown while the database is opening."},
+
+  "authWelcomeTitle": "Welcome to {appName}",
+  "@authWelcomeTitle": {
+    "description": "Title on the first-run login screen.",
+    "placeholders": {
+      "appName": {"type": "String"}
+    }
+  },
+  "authWelcomeBody": "Lagestroemia is a native client for z.ai. To use it, paste your z.ai API key below. You can create one at {url}.",
+  "@authWelcomeBody": {
+    "description": "Body on the first-run login screen.",
+    "placeholders": {
+      "url": {"type": "String"}
+    }
+  },
+  "authApiKeyLabel": "API key",
+  "authApiKeyHint": "Paste the key from the z.ai dashboard",
+  "authApiKeyCreate": "Create an API key",
+  "@authApiKeyCreate": {"description": "Link/button to open the z.ai dashboard."},
+  "authSignIn": "Sign in",
+  "authSignOut": "Sign out",
+  "authInvalidKey": "That doesn't look like a z.ai API key. Keys are usually 30+ characters and start with letters.",
+  "authTesting": "Validating…",
+
+  "chatNew": "New chat",
+  "chatEmptyTitle": "New chat",
+  "chatComposerPlaceholder": "Send a message…",
+  "chatStop": "Stop generating",
+  "chatSend": "Send",
+  "chatRegenerate": "Regenerate",
+  "chatEditMessage": "Edit",
+  "chatDeleteMessage": "Delete",
+  "chatAttachFile": "Attach file",
+  "chatModelPicker": "Model",
+  "chatSystemPrompt": "System prompt",
+  "chatReasoning": "Reasoning",
+  "chatTokens": "{count} tokens",
+  "@chatTokens": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "chatErrorRateLimit": "Rate limit reached. Please wait and try again.",
+  "chatErrorAuth": "Your API key seems invalid. Please check Settings.",
+  "chatErrorNetwork": "Could not reach z.ai. Check your connection.",
+
+  "libraryTabsChats": "Chats",
+  "libraryTabsArtifacts": "Artifacts",
+  "libraryTabsFiles": "Files",
+  "libraryChatsArchived": "Archived",
+  "libraryArtifactsEmpty": "When the assistant produces code, you'll find it here.",
+
+  "promptsNew": "New prompt",
+  "promptsEdit": "Edit",
+  "promptsBuiltinBadge": "Built-in",
+  "promptsCategory": "Category",
+  "promptsBody": "Body",
+
+  "settingsAccountSection": "Account",
+  "settingsAccountKey": "API key",
+  "settingsAccountKeyHint": "Stored in your OS keychain",
+  "settingsAccountRotate": "Rotate key",
+  "settingsApiBaseUrl": "API base URL",
+  "settingsApiBaseUrlReset": "Reset to default",
+  "settingsAppearanceSection": "Appearance",
+  "settingsTheme": "Theme",
+  "settingsThemeSystem": "System",
+  "settingsThemeLight": "Light",
+  "settingsThemeDark": "Dark",
+  "settingsLanguageSection": "Language",
+  "settingsLanguageEn": "English",
+  "settingsLanguageZh": "中文",
+  "settingsAboutSection": "About",
+  "settingsVersion": "Version",
+  "settingsRepoLink": "Source repository",
+  "settingsDocsLink": "Documentation",
+  "settingsRateLimits": "View rate limits"
+}
