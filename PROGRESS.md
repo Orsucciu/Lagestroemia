@@ -198,6 +198,9 @@ Gtk-WARNING **: cannot open display:`) — expected in this sandbox.
 
 ## Outstanding work for future sessions
 
+The following tasks are tracked as GitHub Issues under the
+**MVP polish** milestone. Each issue number is in parentheses.
+
 ### High priority
 
 1. **Run the unit tests** under `flutter test` and fix any failures
@@ -205,36 +208,42 @@ Gtk-WARNING **: cannot open display:`) — expected in this sandbox.
 2. **Wire the file_picker** into the chat composer's attach button.
    The state plumbing (`ChatComposerNotifier.attachFile`) is already
    there; only the UI call to `FilePicker.platform.pickFiles()` is
-   missing.
+   missing. (#1)
 3. **Render image attachments** inline in the chat list when the user
-   message has `content_json` set.
+   message has `content_json` set. (#5)
 4. **Stop button** actually cancels the in-flight HTTP request — pass
-   a `CancelToken` into `ZaiApiClient.chatCompletionStream`.
+   a `CancelToken` into `ZaiApiClient.chatCompletionStream`. (#6)
 5. **Implement the Files view** at `/library/files` (list attachments
-   from the SQLite `attachments` table).
+   from the SQLite `attachments` table). (#7)
 
 ### Medium priority
 
 6. **JWT auth mode** — for keys in form `<id>.<secret>`, sign a
    short-lived JWT (HS256, ms timestamps, `sign_type: SIGN` header)
-   and use it as the Bearer token. UI: a toggle in Settings.
-7. **Model picker** — currently the chat screen's app bar shows a
-   dropdown of all known models; we should also persist the per-chat
-   selection (already wired in the model — just need to seed it from
-   `settings.model` on chat creation, which we do).
-8. **Search** in the chat list and the artifacts library.
-9. **Export chat** to Markdown / JSON.
+   and use it as the Bearer token. UI: a toggle in Settings. (#8)
+7. **Per-chat system prompt picker** in the chat screen's app bar.
+   The `Chat.systemPromptId` field exists; just needs UI. (#4)
+8. **Search** in the chat list and the artifacts library. (#9)
+9. **Export chat** to Markdown / JSON. (#10)
 10. **Tool calls** rendering in the chat view (today tool_calls are
-    stored but not rendered).
+    stored but not rendered). (#11)
 
 ### Low priority / nice-to-have
 
 11. **Multi-account** — the `accounts` table is designed for this; we
-    just need a UI for switching accounts.
+    just need a UI for switching accounts. (#12)
 12. **Drag-and-drop** file attachments in the chat composer on desktop.
 13. **System tray icon** for desktop targets.
 14. **Notification** when a long-running stream finishes in the
     background.
+
+### Build / release
+
+15. **Re-install .github/workflows once a workflow-scoped PAT is
+    available.** Workflows are in `docs/workflows/` until then. (#2)
+16. **Document Web target's lack of at-rest encryption for the API
+    key** in the auth screen + Settings (the README already mentions
+    it). (#3)
 
 ### Known limitations
 
