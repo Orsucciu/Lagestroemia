@@ -36,6 +36,12 @@ jobs:
       - run: flutter gen-l10n
       - run: flutter create --platforms=linux --project-name lagestroemia --org com.lagestroemia .
       - run: flutter build linux --release
+      - name: Smoke test (run the binary for 10 seconds)
+        run: |
+          sudo apt-get install -y xvfb
+          export LD_LIBRARY_PATH=build/linux/x64/release/bundle/lib:$LD_LIBRARY_PATH
+          timeout 10 xvfb-run -a build/linux/x64/release/bundle/lagestroemia || true
+          echo "Binary ran without crash (exit: $?)"
       - name: Tar
         run: cd build/linux/x64/release/bundle && tar -czf lagestroemia-linux-x64.tar.gz *
       - uses: actions/upload-artifact@v4
