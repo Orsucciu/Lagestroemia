@@ -111,3 +111,92 @@ jobs:
         with:
           name: lagestroemia-windows-x64
           path: lagestroemia-windows-x64.zip
+
+  # Upload all artifacts to the GitHub Releases tab. Creates or updates
+  # the "latest" release with all build outputs.
+  release:
+    needs: [build-linux, build-web, build-android, build-windows]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download all artifacts from the build jobs
+      - uses: actions/download-artifact@v4
+        with:
+          name: lagestroemia-linux-x64
+          path: artifacts/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: lagestroemia-web
+          path: artifacts/web
+      - uses: actions/download-artifact@v4
+        with:
+          name: lagestroemia-android-apks
+          path: artifacts/android
+      - uses: actions/download-artifact@v4
+        with:
+          name: lagestroemia-windows-x64
+          path: artifacts/windows
+
+      # Rename Android APKs for clarity
+      - name: Rename APKs
+        run: |
+          cp artifacts/android/app-armeabi-v7a-release.apk artifacts/lagestroemia-android-arm.apk
+          cp artifacts/android/app-arm64-v8a-release.apk artifacts/lagestroemia-android-arm64.apk
+          cp artifacts/android/app-x86_64-release.apk artifacts/lagestroemia-android-x64.apk
+          cp artifacts/linux/lagestroemia-linux-x64.tar.gz artifacts/
+          cp artifacts/web/lagestroemia-web.tar.gz artifacts/
+          cp artifacts/windows/lagestroemia-windows-x64.zip artifacts/
+
+      # Generate SHA256 checksums
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum lagestroemia-linux-x64.tar.gz \
+                   lagestroemia-web.tar.gz \
+                   lagestroemia-android-arm.apk \
+                   lagestroemia-android-arm64.apk \
+                   lagestroemia-android-x64.apk \
+                   lagestroemia-windows-x64.zip > checksums.txt
+          cat checksums.txt
+
+      # Delete the old release assets (if any) and re-upload
+      - name: Update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Lagestroemia (latest build from main)
+          body: |
+            ## Latest build from main
+
+            Built from commit ${{ github.sha }}.
+
+            ### Artifacts
+            - **lagestroemia-linux-x64.tar.gz** — Linux x64 native binary
+            - **lagestroemia-web.tar.gz** — Web bundle (JS)
+            - **lagestroemia-android-arm64.apk** — Android arm64 (modern phones)
+            - **lagestroemia-android-arm.apk** — Android arm (older phones)
+            - **lagestroemia-android-x64.apk** — Android x86_64 (emulators)
+            - **lagestroemia-windows-x64.zip** — Windows x64 binary
+            - **checksums.txt** — SHA256 checksums
+
+            ### How to install
+            **Linux**: `tar xzf lagestroemia-linux-x64.tar.gz && ./lagestroemia`
+            **Android**: Install the APK that matches your device architecture
+            **Windows**: Unzip and run `lagestroemia.exe`
+            **Web**: Serve the `web/` directory with any static file server
+          files: |
+            artifacts/lagestroemia-linux-x64.tar.gz
+            artifacts/lagestroemia-web.tar.gz
+            artifacts/lagestroemia-android-arm.apk
+            artifacts/lagestroemia-android-arm64.apk
+            artifacts/lagestroemia-android-x64.apk
+            artifacts/lagestroemia-windows-x64.zip
+            artifacts/checksums.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
