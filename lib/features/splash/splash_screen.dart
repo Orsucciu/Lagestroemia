@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../state/auth_state.dart';
+import '../../state/openai_server_state.dart';
 import '../../core/config/app_config.dart';
 
 class SplashScreen extends ConsumerStatefulWidget {
@@ -25,6 +26,9 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await ref.read(authStateProvider.notifier).restore();
+      // Restore the OpenAI server if it was running before the last quit.
+      // (Native targets only — on Web this is a no-op.)
+      await ref.read(openAiServerProvider.notifier).restoreIfEnabled();
       if (!mounted) return;
       final auth = ref.read(authStateProvider);
       if (auth.signedIn) {

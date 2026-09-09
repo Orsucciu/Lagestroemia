@@ -22,6 +22,7 @@ import '../../l10n/generated/app_localizations.dart';
 import '../../state/auth_state.dart';
 import '../../state/providers.dart';
 import '../../state/settings_state.dart';
+import 'openai_server_section.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -153,6 +154,10 @@ class SettingsScreen extends ConsumerWidget {
                 'without at-rest encryption.',
               ),
             ),
+
+          // OpenAI-compatible local server section (native only).
+          const Divider(),
+          const OpenAiServerSection(),
 
           _SectionHeader(l.settingsAppearanceSection),
           ListTile(
