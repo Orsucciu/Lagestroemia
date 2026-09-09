@@ -44,7 +44,7 @@ dependencies:
   cross_file: ^0.3.4+2
 
   # i18n
-  intl: ^0.19.0
+  intl: any
 
   # Misc utilities
   uuid: ^4.5.1
