@@ -32,6 +32,7 @@ jobs:
             libxfixes-dev libxcomposite-dev libxdamage-dev \
             libxinerama-dev libgl1-mesa-dev libegl1-mesa-dev \
             libgles2-mesa-dev
+      - run: flutter precache --linux
       - run: flutter pub get
       - run: flutter gen-l10n
       - run: flutter build linux --release
@@ -98,6 +99,7 @@ jobs:
           channel: stable
           flutter-version: "3.27.4"
           cache: true
+      - run: flutter precache --windows
       - run: flutter pub get
       - run: flutter gen-l10n
       - run: flutter build windows --release
