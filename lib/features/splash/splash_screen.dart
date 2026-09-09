@@ -3,14 +3,11 @@
 // signed in via guest or API key) or the auth screen (if guest fetch
 // failed).
 //
-// The default flow is: app launches → splash → restore() → guest signup →
-// chat list. The auth screen is only shown if the guest fetch fails.
-//
-// BUG FIX: if restore() hangs (e.g. network is slow on mobile, or the
-// guest token fetch blocks), the splash screen would stay on "loading"
-// forever. This version adds a 10-second fallback: if restore() hasn't
-// completed in 10 seconds, we route to /auth so the user can retry
-// manually or switch to API-key mode.
+// BUG FIX: if restore() hangs (e.g. flutter_secure_storage blocks on
+// Windows Credential Manager, or the network call is slow), the splash
+// screen would stay on "loading" forever. This version adds a 5-second
+// fallback: if restore() hasn't completed in 5 seconds, we route to
+// /auth so the user can retry manually or switch to API-key mode.
 
 import 'dart:async';
 
@@ -37,31 +34,39 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // Start a 10-second fallback. If restore() hasn't completed in
-      // 10 seconds, navigate to /auth so the user isn't stuck.
-      _fallbackTimer = Timer(const Duration(seconds: 10), () {
+      // 5-second fallback. If restore() hasn't completed, go to /auth.
+      _fallbackTimer = Timer(const Duration(seconds: 5), () {
         if (!_navigated && mounted) {
           _navigateToAuth();
         }
       });
 
       try {
-        await ref.read(authStateProvider.notifier).restore();
-        // Restore anonymous profiles from SharedPreferences.
-        await ref.read(anonProfilesProvider.notifier).restore();
-        // Restore the OpenAI server if it was running before the last
-        // quit. (Native targets only — on Web this is a no-op.)
-        try {
-          await ref
-              .read(openAiServerProvider.notifier)
-              .restoreIfEnabled()
-              .timeout(const Duration(seconds: 5));
-        } catch (_) {
-          // OpenAI server restore failed — not critical, just skip.
-        }
+        // Run restore() with a 5-second timeout. If it doesn't complete
+        // in time, we catch the timeout and navigate to /auth.
+        await ref
+            .read(authStateProvider.notifier)
+            .restore()
+            .timeout(const Duration(seconds: 5));
+      } on TimeoutException {
+        // restore() took too long — go to auth screen.
       } catch (e) {
         // Any error during restore — go to auth.
       }
+
+      try {
+        await ref
+            .read(anonProfilesProvider.notifier)
+            .restore()
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {}
+
+      try {
+        await ref
+            .read(openAiServerProvider.notifier)
+            .restoreIfEnabled()
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {}
 
       _fallbackTimer?.cancel();
       if (!mounted || _navigated) return;

@@ -196,7 +196,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<void> restore() async {
     state = state.copyWith(status: AuthStatus.loading);
     try {
-      final key = await _secure.getApiKey();
+      final key = await _secure.getApiKey().timeout(
+        const Duration(seconds: 3), onTimeout: () => null);
       if (key != null && key.isNotEmpty) {
         state = AuthState(
           mode: AuthMode.apiKey,
