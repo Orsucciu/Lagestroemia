@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for network access (z.ai API, chat.z.ai guest signup,
+         OpenAI-compat server, etc.) -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Required for the OpenAI-compat server to bind a local port -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <application
         android:label="lagestroemia"
         android:name="${applicationName}"

@@ -18,6 +18,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -223,15 +224,21 @@ class AnonProfilesNotifier extends StateNotifier<AnonProfilesState> {
 
   Future<_GuestAuth?> _fetchGuestToken() async {
     try {
+      final ua = Platform.isAndroid || Platform.isIOS
+          ? 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, '
+              'like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'
+          : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, '
+              'like Gecko) Chrome/130.0.0.0 Safari/537.36';
       final response = await _dio.get<dynamic>(
         '${AppConfig.chatZaiApiBaseUrl}/v1/auths/',
         options: Options(
+          sendTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 10),
           headers: <String, Object?>{
             'Accept': 'application/json',
             'Origin': 'https://chat.z.ai',
             'Referer': 'https://chat.z.ai/',
-            'User-Agent':
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            'User-Agent': ua,
             'X-FE-Version': AppConfig.chatZaiFeVersion,
           },
         ),

@@ -23,6 +23,9 @@
 //     accounts, each with its own API key stored per-account in the OS
 //     keychain.
 
+import 'dart:async';
+import 'dart:io' show Platform;
+
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -386,12 +389,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final response = await _dio.get<dynamic>(
         '${AppConfig.chatZaiApiBaseUrl}/v1/auths/',
         options: Options(
+          // 10-second connect + receive timeout so the splash doesn't
+          // hang forever on a slow mobile network.
+          sendTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 10),
           headers: <String, Object?>{
             'Accept': 'application/json',
             'Origin': 'https://chat.z.ai',
             'Referer': 'https://chat.z.ai/',
-            'User-Agent':
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            // Use a generic mobile UA on Android/iOS (the desktop Linux
+            // UA may be blocked by some CDNs on mobile networks).
+            'User-Agent': _userAgent,
             'X-FE-Version': AppConfig.chatZaiFeVersion,
           },
         ),
@@ -426,6 +434,18 @@ class _GuestAuth {
   const _GuestAuth({required this.token, this.userId});
   final String token;
   final String? userId;
+}
+
+/// Returns a platform-appropriate User-Agent string. On Android/iOS, uses
+/// a mobile UA; on desktop, uses a desktop Chrome UA. This matters because
+/// some CDNs/firewalls block desktop UAs from mobile networks.
+String get _userAgent {
+  if (Platform.isAndroid || Platform.isIOS) {
+    return 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, '
+        'like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+  }
+  return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like '
+      'Gecko) Chrome/130.0.0.0 Safari/537.36';
 }
 
 const String _kPrefUseJwtAuth = '${AppConfig.prefsPrefix}use_jwt_auth';

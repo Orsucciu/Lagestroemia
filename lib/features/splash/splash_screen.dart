@@ -5,6 +5,14 @@
 //
 // The default flow is: app launches → splash → restore() → guest signup →
 // chat list. The auth screen is only shown if the guest fetch fails.
+//
+// BUG FIX: if restore() hangs (e.g. network is slow on mobile, or the
+// guest token fetch blocks), the splash screen would stay on "loading"
+// forever. This version adds a 10-second fallback: if restore() hasn't
+// completed in 10 seconds, we route to /auth so the user can retry
+// manually or switch to API-key mode.
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,24 +30,60 @@ class SplashScreen extends ConsumerStatefulWidget {
 }
 
 class _SplashScreenState extends ConsumerState<SplashScreen> {
+  Timer? _fallbackTimer;
+  bool _navigated = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await ref.read(authStateProvider.notifier).restore();
-      // Restore anonymous profiles from SharedPreferences.
-      await ref.read(anonProfilesProvider.notifier).restore();
-      // Restore the OpenAI server if it was running before the last quit.
-      // (Native targets only — on Web this is a no-op.)
-      await ref.read(openAiServerProvider.notifier).restoreIfEnabled();
-      if (!mounted) return;
+      // Start a 10-second fallback. If restore() hasn't completed in
+      // 10 seconds, navigate to /auth so the user isn't stuck.
+      _fallbackTimer = Timer(const Duration(seconds: 10), () {
+        if (!_navigated && mounted) {
+          _navigateToAuth();
+        }
+      });
+
+      try {
+        await ref.read(authStateProvider.notifier).restore();
+        // Restore anonymous profiles from SharedPreferences.
+        await ref.read(anonProfilesProvider.notifier).restore();
+        // Restore the OpenAI server if it was running before the last
+        // quit. (Native targets only — on Web this is a no-op.)
+        try {
+          await ref
+              .read(openAiServerProvider.notifier)
+              .restoreIfEnabled()
+              .timeout(const Duration(seconds: 5));
+        } catch (_) {
+          // OpenAI server restore failed — not critical, just skip.
+        }
+      } catch (e) {
+        // Any error during restore — go to auth.
+      }
+
+      _fallbackTimer?.cancel();
+      if (!mounted || _navigated) return;
       final auth = ref.read(authStateProvider);
       if (auth.signedIn) {
+        _navigated = true;
         context.go('/');
       } else {
-        context.go('/auth');
+        _navigateToAuth();
       }
     });
+  }
+
+  void _navigateToAuth() {
+    _navigated = true;
+    if (mounted) context.go('/auth');
+  }
+
+  @override
+  void dispose() {
+    _fallbackTimer?.cancel();
+    super.dispose();
   }
 
   @override
