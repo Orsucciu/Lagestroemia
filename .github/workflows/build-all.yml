@@ -102,6 +102,8 @@ jobs:
       - run: flutter gen-l10n
       - run: flutter create --platforms=windows --project-name lagestroemia --org com.lagestroemia .
       - run: flutter build windows --release
+        env:
+          CL: "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
       - name: Zip
         shell: pwsh
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath lagestroemia-windows-x64.zip
