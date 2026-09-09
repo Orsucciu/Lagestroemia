@@ -67,7 +67,44 @@ class ChatScreen extends ConsumerWidget {
             },
             itemBuilder: (_) => <PopupMenuEntry<String>>[
               for (final m in knownModels)
-                PopupMenuItem(value: m, child: Text(m)),
+                PopupMenuItem(
+                  value: m,
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(child: Text(m)),
+                      if (AppConfig.isChatZaiAgentModel(m) &&
+                          auth.mode == AuthMode.guest)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color:
+                                Theme.of(context).colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'agent',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                      if (AppConfig.isApiZaiAgentModel(m) &&
+                          auth.mode == AuthMode.apiKey)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color:
+                                Theme.of(context).colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'agent',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
             ],
           ),
           // Per-chat system prompt picker (issue #4)

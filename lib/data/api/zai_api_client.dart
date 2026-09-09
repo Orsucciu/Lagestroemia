@@ -145,7 +145,32 @@ class ZaiApiClient {
   /// Returns the active backend.
   ApiBackend get backend => _backend;
 
-  /// Returns the chat completions path for the active backend.
+  /// Returns the chat completions path for the active backend, picking
+  /// the **agent** path if [model] is agent-capable on the active
+  /// backend.
+  ///
+  /// On chat.z.ai (guest mode), some models report `agent_mode: true`
+  /// in their `meta.capabilities`. Those go through
+  /// `/api/agent/v2/chat/completions` instead of `/api/v2/chat/completions`.
+  /// The SSE envelope is identical; only the URL prefix differs.
+  ///
+  /// On api.z.ai (paid mode), the public agent API at `/v1/agents` has
+  /// a different request shape — callers should use [agentRequest]
+  /// instead of [chatCompletionStream] for those.
+  String chatCompletionsPathFor({String? model}) {
+    if (_backend == ApiBackend.chatZai) {
+      final m = model ?? AppConfig.defaultGuestModel;
+      return AppConfig.isChatZaiAgentModel(m)
+          ? AppConfig.chatZaiAgentChatCompletionsPath
+          : AppConfig.chatZaiChatCompletionsPath;
+    }
+    // api.z.ai (paid)
+    return AppConfig.chatCompletionsPath;
+  }
+
+  /// Returns the legacy fixed chat-completions path for the active
+  /// backend (no agent-mode routing). Used by tests that need a
+  /// deterministic path.
   String get _chatCompletionsPath => _backend == ApiBackend.chatZai
       ? AppConfig.chatZaiChatCompletionsPath
       : AppConfig.chatCompletionsPath;
@@ -196,7 +221,7 @@ class ZaiApiClient {
 
     try {
       final response = await _dio.post<dynamic>(
-        _chatCompletionsPath,
+        chatCompletionsPathFor(model: model),
         data: jsonEncode(body),
       );
       final data = response.data;
@@ -247,7 +272,7 @@ class ZaiApiClient {
     Response<ResponseBody> response;
     try {
       response = await _dio.post<ResponseBody>(
-        _chatCompletionsPath,
+        chatCompletionsPathFor(model: model),
         data: jsonEncode(body),
         cancelToken: cancelToken,
         options: Options(
@@ -386,6 +411,74 @@ class ZaiApiClient {
         purpose: m['purpose']! as String,
         createdAt: DateTime.now().toUtc(),
       ));
+    } on DioException catch (e) {
+      return _dioErrorToApiError(e).errResult();
+    }
+  }
+
+  /// Submits a request to the public agent API (api.z.ai only, paid).
+  ///
+  /// Three agent types are supported by the public API:
+  ///  - `general_translation` — translation services
+  ///  - `vidu_template_agent` — special-effects video generation
+  ///  - `slides_glm_agent` — slide/poster generation
+  ///
+  /// The [body] is the full request payload (must include `agent_id` and
+  /// `messages`). For `slides_glm_agent` and `vidu_template_agent` the
+  /// response is async — call [pollAgentResult] with the returned
+  /// `async_id` to fetch the result.
+  ///
+  /// Returns the parsed response on success, an [ApiError] on failure.
+  /// Not supported in guest mode (returns an [ApiError]).
+  Future<Result<Map<String, Object?>, ApiError>> agentRequest({
+    required Map<String, Object?> body,
+  }) async {
+    if (_backend == ApiBackend.chatZai) {
+      return Err<Map<String, Object?>, ApiError>(ApiError(
+        message: 'Public agent API is not available in guest mode. Sign '
+            'in with an API key to use agent endpoints.',
+        kind: ApiErrorKind.unknown,
+      ));
+    }
+    try {
+      final response =
+          await _dio.post<dynamic>(AppConfig.agentsPath, data: jsonEncode(body));
+      final data = response.data;
+      final m = data is String
+          ? jsonDecode(data) as Map<String, Object?>
+          : data as Map<String, Object?>;
+      return Ok(m);
+    } on DioException catch (e) {
+      return _dioErrorToApiError(e).errResult();
+    }
+  }
+
+  /// Polls the result of an async agent task (api.z.ai only, paid).
+  /// Used after [agentRequest] returns an `async_id` for the
+  /// `vidu_template_agent` and `slides_glm_agent` agent types.
+  Future<Result<Map<String, Object?>, ApiError>> pollAgentResult({
+    required String agentId,
+    required String asyncId,
+  }) async {
+    if (_backend == ApiBackend.chatZai) {
+      return Err<Map<String, Object?>, ApiError>(ApiError(
+        message: 'Public agent API is not available in guest mode.',
+        kind: ApiErrorKind.unknown,
+      ));
+    }
+    try {
+      final response = await _dio.post<dynamic>(
+        AppConfig.agentsAsyncResultPath,
+        data: jsonEncode(<String, Object?>{
+          'agent_id': agentId,
+          'async_id': asyncId,
+        }),
+      );
+      final data = response.data;
+      final m = data is String
+          ? jsonDecode(data) as Map<String, Object?>
+          : data as Map<String, Object?>;
+      return Ok(m);
     } on DioException catch (e) {
       return _dioErrorToApiError(e).errResult();
     }

@@ -94,4 +94,36 @@ void main() {
     expect(models, isNotEmpty);
     expect(models, contains('glm-4.7'));
   }, timeout: const Timeout(Duration(seconds: 30)));
+
+  test('agent-mode chat endpoint (/api/agent/v2/chat/completions) is reachable '
+      'and returns captcha-required', () async {
+    // The agent-mode endpoint has the same shape as the regular
+    // /api/v2/chat/completions endpoint — same SSE envelope, same
+    // captcha requirement. The only difference is the URL prefix.
+    // We pick `deep-research` which is an agent-capable model on
+    // chat.z.ai, so the client should route to the agent path.
+    final stream = client.chatCompletionStream(
+      messages: <Map<String, Object?>>[
+        <String, Object?>{'role': 'user', 'content': 'ping'},
+      ],
+      model: 'x-preview-l', // GLM-5.3-Flash, agent-capable, guest-available
+    );
+    final chunks = <ChatStreamChunk>[];
+    await for (final chunk in stream) {
+      chunks.add(chunk);
+      if (chunk.error != null) break;
+    }
+    // ignore: avoid_print
+    print('Agent mode: ${chunks.length} chunks. Errors: '
+        '${chunks.where((c) => c.error != null).map((c) => c.error!.message).toList()}');
+    expect(chunks, isNotEmpty);
+    // The first chunk should carry the captcha-required error
+    // (same as the regular endpoint, but routed through /agent/v2).
+    final hasCaptchaError = chunks.any((c) =>
+        c.error != null &&
+        (c.error!.message.toLowerCase().contains('captcha')));
+    expect(hasCaptchaError, isTrue,
+        reason: 'Expected the agent endpoint to require a captcha in guest '
+            'mode. Got chunks: $chunks');
+  }, timeout: const Timeout(Duration(seconds: 30)));
 }

@@ -65,6 +65,15 @@ class AppConfig {
   /// `data: {"type":"chat:completion","data":{...}}` and `[DONE]`.
   static const String chatZaiChatCompletionsPath = '/v2/chat/completions';
 
+  /// Path appended to [chatZaiApiBaseUrl] for **agent-mode** chat
+  /// completions (issue: agent mode). The shape is identical to
+  /// [chatZaiChatCompletionsPath] — same SSE envelope, same captcha —
+  /// but goes through the agent endpoint at `/api/agent/v2/...` instead
+  /// of the regular `/api/v2/...`. Used when the user picks an
+  /// "agent-capable" model like `deep-research`, `ppt-maker`, etc.
+  static const String chatZaiAgentChatCompletionsPath =
+      '/agent/v2/chat/completions';
+
   /// Path appended to [chatZaiApiBaseUrl] for anonymous guest signup.
   /// `GET /v1/auths/` returns a guest user with a JWT.
   static const String chatZaiGuestAuthPath = '/v1/auths/';
@@ -85,6 +94,23 @@ class AppConfig {
 
   /// Path appended to [defaultApiBaseUrl] for the reader tool.
   static const String readerPath = '/reader';
+
+  /// Path appended to [defaultApiBaseUrl] for the public agent API
+  /// (api.z.ai, paid). POST /v1/agents supports three agent types:
+  ///  - `general_translation` — translation services
+  ///  - `vidu_template_agent` — special-effects video generation
+  ///  - `slides_glm_agent` — slide/poster generation
+  /// All three are async (return an `async_id` that's polled via
+  /// [agentsAsyncResultPath]).
+  static const String agentsPath = '/v1/agents';
+
+  /// Path appended to [defaultApiBaseUrl] for fetching an async agent
+  /// task result. POST with `{agent_id, async_id}`.
+  static const String agentsAsyncResultPath = '/v1/agents/async-result';
+
+  /// Path appended to [defaultApiBaseUrl] for continuing an agent
+  /// conversation (e.g. multi-turn slide refinement).
+  static const String agentsConversationPath = '/v1/agents/conversation';
 
   // ---- z.ai web app URLs (used in Settings to deep-link to dashboards) --
 
@@ -149,6 +175,51 @@ class AppConfig {
     'deep-research',                 // Z1-Rumination
     'zero',                          // Z1-32B
   ];
+
+  /// Models on chat.z.ai that support **agent mode** (the model's
+  /// `meta.capabilities.agent_mode` field is `true` in the live response).
+  /// When the user picks one of these models, chat completions go through
+  /// [chatZaiAgentChatCompletionsPath] instead of the regular
+  /// [chatZaiChatCompletionsPath].
+  ///
+  /// Source: chat.z.ai `GET /api/models` response. Selected entries:
+  /// `glm-5.3`, `glm-5.2`, `GLM-5-Turbo`, `GLM-5v-Turbo`, `x-preview-l`,
+  /// `deep-research`, `zero`, `0727-106B-API`, `0727-360B-API`. All of
+  /// these have `agent_mode: true` in their `meta.capabilities`.
+  static const List<String> chatZaiAgentCapableModels = <String>[
+    'glm-5.3',
+    'glm-5.2',
+    'GLM-5-Turbo',
+    'GLM-5v-Turbo',
+    'x-preview-l',
+    'deep-research',
+    'zero',
+    '0727-106B-API',
+    '0727-360B-API',
+  ];
+
+  /// Models on api.z.ai (paid, API-key mode) that support agent mode.
+  /// These go through the public `/v1/agents` endpoint instead of the
+  /// OpenAI-compatible `/chat/completions`.
+  ///
+  /// Note: the public agent API only supports three agent types:
+  /// `general_translation`, `vidu_template_agent`, `slides_glm_agent`.
+  /// All other GLM models go through the regular chat endpoint.
+  static const List<String> apiZaiAgentCapableModels = <String>[
+    'general_translation',
+    'vidu_template_agent',
+    'slides_glm_agent',
+  ];
+
+  /// Returns `true` if the given model id is in
+  /// [chatZaiAgentCapableModels].
+  static bool isChatZaiAgentModel(String model) =>
+      chatZaiAgentCapableModels.contains(model);
+
+  /// Returns `true` if the given model id is in
+  /// [apiZaiAgentCapableModels] (the public agent API).
+  static bool isApiZaiAgentModel(String model) =>
+      apiZaiAgentCapableModels.contains(model);
 
   // ---- Aliyun captcha (used in guest mode before the first chat) ------
 
