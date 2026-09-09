@@ -6,7 +6,7 @@
 .pub/
 build/
 **/generated_plugin_registrant.dart
-**/ephemeral/
+
 **/.symlinks/
 
 # Flutter SDK local installs (we keep Flutter outside the repo)
