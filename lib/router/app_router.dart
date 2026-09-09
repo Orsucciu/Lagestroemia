@@ -91,9 +91,20 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
     redirect: (context, state) {
       final path = state.matchedLocation;
+      // ignore: avoid_print
+      print('[ROUTER] redirect: path=$path, auth.status=${auth.status}, '
+          'auth.signedIn=${auth.signedIn}, auth.mode=${auth.mode}');
       if (auth.status == AuthStatus.loading || path == '/splash') return null;
-      if (!auth.signedIn && path != '/auth') return '/auth';
-      if (auth.signedIn && path == '/auth') return '/';
+      if (!auth.signedIn && path != '/auth') {
+        // ignore: avoid_print
+        print('[ROUTER] -> redirecting to /auth');
+        return '/auth';
+      }
+      if (auth.signedIn && path == '/auth') {
+        // ignore: avoid_print
+        print('[ROUTER] -> redirecting to /');
+        return '/';
+      }
       return null;
     },
   );

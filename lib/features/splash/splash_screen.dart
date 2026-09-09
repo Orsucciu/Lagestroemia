@@ -3,13 +3,12 @@
 // signed in via guest or API key) or the auth screen (if guest fetch
 // failed).
 //
-// BUG FIX: if restore() hangs (e.g. flutter_secure_storage blocks on
-// Windows Credential Manager, or the network call is slow), the splash
-// screen would stay on "loading" forever. This version adds a 5-second
-// fallback: if restore() hasn't completed in 5 seconds, we route to
-// /auth so the user can retry manually or switch to API-key mode.
+// DEBUG: prints every step to the console so the user can see exactly
+// where the app is hanging. Run the app from a terminal to see the
+// output.
 
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,6 +19,11 @@ import '../../state/openai_server_state.dart';
 import '../../state/anon_profiles_state.dart';
 import '../../core/config/app_config.dart';
 
+void _debug(String msg) {
+  // ignore: avoid_print
+  print('[SPLASH] $msg');
+}
+
 class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
   @override
@@ -29,52 +33,84 @@ class SplashScreen extends ConsumerStatefulWidget {
 class _SplashScreenState extends ConsumerState<SplashScreen> {
   Timer? _fallbackTimer;
   bool _navigated = false;
+  String _statusText = 'Initializing...';
+
+  void _setStatus(String s) {
+    _statusText = s;
+    _debug(s);
+    if (mounted) setState(() {});
+  }
 
   @override
   void initState() {
     super.initState();
+    _debug('Splash screen initState');
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // 5-second fallback. If restore() hasn't completed, go to /auth.
+      _debug('Post-frame callback started');
+
+      // 5-second fallback timer
       _fallbackTimer = Timer(const Duration(seconds: 5), () {
+        _debug('FALLBACK TIMER FIRED (5s elapsed without completion)');
         if (!_navigated && mounted) {
+          _setStatus('Fallback: navigating to auth screen');
           _navigateToAuth();
         }
       });
 
+      // Step 1: restore auth state
+      _setStatus('1/4: Restoring auth state...');
       try {
-        // Run restore() with a 5-second timeout. If it doesn't complete
-        // in time, we catch the timeout and navigate to /auth.
         await ref
             .read(authStateProvider.notifier)
             .restore()
             .timeout(const Duration(seconds: 5));
+        _debug('  restore() completed');
       } on TimeoutException {
-        // restore() took too long — go to auth screen.
+        _debug('  restore() timed out');
       } catch (e) {
-        // Any error during restore — go to auth.
+        _debug('  restore() threw: $e');
       }
 
+      // Step 2: restore anon profiles
+      _setStatus('2/4: Restoring anonymous profiles...');
       try {
         await ref
             .read(anonProfilesProvider.notifier)
             .restore()
             .timeout(const Duration(seconds: 3));
-      } catch (_) {}
+        _debug('  anonProfiles.restore() completed');
+      } catch (e) {
+        _debug('  anonProfiles.restore() threw: $e');
+      }
 
+      // Step 3: restore OpenAI server
+      _setStatus('3/4: Restoring OpenAI server...');
       try {
         await ref
             .read(openAiServerProvider.notifier)
             .restoreIfEnabled()
             .timeout(const Duration(seconds: 3));
-      } catch (_) {}
+        _debug('  openAiServer.restoreIfEnabled() completed');
+      } on TimeoutException {
+        _debug('  openAiServer.restoreIfEnabled() TIMEOUT');
+      } catch (e) {
+        _debug('  openAiServer.restoreIfEnabled() threw: $e');
+      }
 
       _fallbackTimer?.cancel();
       if (!mounted || _navigated) return;
+
+      // Step 4: navigate
+      _setStatus('4/4: Navigating...');
       final auth = ref.read(authStateProvider);
+      _debug('  auth.signedIn=${auth.signedIn}, mode=${auth.mode}, '
+          'status=${auth.status}');
       if (auth.signedIn) {
+        _debug('  -> navigating to / (chat list)');
         _navigated = true;
         context.go('/');
       } else {
+        _debug('  -> navigating to /auth (auth screen)');
         _navigateToAuth();
       }
     });
@@ -87,13 +123,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
 
   @override
   void dispose() {
+    _debug('Splash screen disposed');
     _fallbackTimer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final auth = ref.watch(authStateProvider);
     return Scaffold(
       body: Center(
         child: Column(
@@ -110,12 +146,9 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
             const CircularProgressIndicator(),
             const SizedBox(height: 16),
             Text(
-              auth.status == AuthStatus.loading
-                  ? 'Starting up…'
-                  : auth.status == AuthStatus.error
-                      ? (auth.lastError ?? 'Could not reach z.ai')
-                      : '',
+              _statusText,
               style: Theme.of(context).textTheme.bodySmall,
+              textAlign: TextAlign.center,
             ),
           ],
         ),

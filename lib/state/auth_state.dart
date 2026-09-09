@@ -194,11 +194,23 @@ class AuthNotifier extends StateNotifier<AuthState> {
   ///    [AuthMode.guest].
   /// 3. If the guest fetch fails too, fall back to [AuthStatus.error].
   Future<void> restore() async {
+    // ignore: avoid_print
+    print('[AUTH] restore() started');
     state = state.copyWith(status: AuthStatus.loading);
     try {
+      // ignore: avoid_print
+      print('[AUTH] restore(): reading API key from secure storage...');
       final key = await _secure.getApiKey().timeout(
-        const Duration(seconds: 3), onTimeout: () => null);
+        const Duration(seconds: 3), onTimeout: () {
+        // ignore: avoid_print
+        print('[AUTH] restore(): getApiKey() TIMED OUT after 3s');
+        return null;
+      });
+      // ignore: avoid_print
+      print('[AUTH] restore(): getApiKey() returned: ${key == null ? "null" : "key(${key.length} chars)"}');
       if (key != null && key.isNotEmpty) {
+        // ignore: avoid_print
+        print('[AUTH] restore(): API key found, signing in');
         state = AuthState(
           mode: AuthMode.apiKey,
           apiKey: key,
@@ -207,8 +219,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
         );
         return;
       }
+      // ignore: avoid_print
+      print('[AUTH] restore(): no API key, fetching guest token...');
       final guest = await _fetchGuestToken();
       if (guest != null) {
+        // ignore: avoid_print
+        print('[AUTH] restore(): guest token fetched OK');
         state = AuthState(
           mode: AuthMode.guest,
           guestToken: guest.token,
@@ -216,14 +232,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
           status: AuthStatus.signedIn,
         );
       } else {
+        // ignore: avoid_print
+        print('[AUTH] restore(): guest token fetch returned null');
         state = const AuthState(status: AuthStatus.signedOut);
       }
     } catch (e) {
+      // ignore: avoid_print
+      print('[AUTH] restore(): EXCEPTION: $e');
       state = AuthState(
         status: AuthStatus.error,
         lastError: e.toString(),
       );
     }
+    // ignore: avoid_print
+    print('[AUTH] restore() finished, status=${state.status}, mode=${state.mode}');
   }
 
   /// Force guest mode (used by the auth screen's "Continue as guest" button
@@ -386,25 +408,27 @@ class AuthNotifier extends StateNotifier<AuthState> {
   ///
   /// Returns `(token, userId)` on success, null on failure.
   Future<_GuestAuth?> _fetchGuestToken() async {
+    // ignore: avoid_print
+    print('[AUTH] _fetchGuestToken(): sending GET to '
+        '${AppConfig.chatZaiApiBaseUrl}/v1/auths/ ...');
     try {
       final response = await _dio.get<dynamic>(
         '${AppConfig.chatZaiApiBaseUrl}/v1/auths/',
         options: Options(
-          // 10-second connect + receive timeout so the splash doesn't
-          // hang forever on a slow mobile network.
           sendTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
           headers: <String, Object?>{
             'Accept': 'application/json',
             'Origin': 'https://chat.z.ai',
             'Referer': 'https://chat.z.ai/',
-            // Use a generic mobile UA on Android/iOS (the desktop Linux
-            // UA may be blocked by some CDNs on mobile networks).
             'User-Agent': _userAgent,
             'X-FE-Version': AppConfig.chatZaiFeVersion,
           },
         ),
       );
+      // ignore: avoid_print
+      print('[AUTH] _fetchGuestToken(): got response '
+          '(status ${response.statusCode})');
       final data = response.data;
       final m = data is String
           ? Map<String, Object?>.from(response.data as Map)
@@ -414,6 +438,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
       if (token == null || token.isEmpty) return null;
       return _GuestAuth(token: token, userId: id);
     } catch (e) {
+      // ignore: avoid_print
+      print('[AUTH] _fetchGuestToken(): EXCEPTION: $e');
       return null;
     }
   }
