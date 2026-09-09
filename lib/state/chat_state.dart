@@ -100,6 +100,14 @@ final currentChatMessagesProvider = FutureProvider<List<ChatMessage>>((ref) asyn
   return repo.listForChat(id);
 });
 
+/// Lists ALL chats across ALL profiles (including archived ones) for
+/// the "Continue from history" dialog. Not filtered by the active
+/// anonymous profile.
+final allChatsForHistoryProvider = FutureProvider<List<Chat>>((ref) async {
+  final repo = await ref.watch(chatRepositoryProvider.future);
+  return repo.listAll(includeArchived: true);
+});
+
 // ---- composer + send ---------------------------------------------------
 
 /// Composer state for the currently-open chat.
@@ -567,6 +575,71 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     } catch (e) {
       state = state.copyWith(error: ApiError(
         message: 'Failed to import conversation: $e',
+        kind: ApiErrorKind.unknown,
+      ));
+      return null;
+    }
+  }
+
+  /// Continues a past conversation from the SQLite history into a
+  /// fresh chat under the active anonymous profile (or creates a new
+  /// profile if none exists). Copies all messages from the source chat
+  /// into the new chat.
+  ///
+  /// Returns the new chat's id on success, null on failure.
+  Future<String?> continueFromHistory(String sourceChatId) async {
+    try {
+      final chatRepo = await _ref.read(chatRepositoryProvider.future);
+      final msgRepo = await _ref.read(messageRepositoryProvider.future);
+      final settings = _ref.read(settingsStateProvider);
+      final anonProfiles = _ref.read(anonProfilesProvider);
+
+      // Load the source chat + its messages.
+      final sourceChat = await chatRepo.findById(sourceChatId);
+      if (sourceChat == null) return null;
+      final sourceMessages = await msgRepo.listForChat(sourceChatId);
+      if (sourceMessages.isEmpty) return null;
+
+      // If no anonymous profile exists yet, create one.
+      String? profileId = anonProfiles.active?.id;
+      if (profileId == null) {
+        final newProfile = await _ref
+            .read(anonProfilesProvider.notifier)
+            .createNew();
+        profileId = newProfile?.id;
+      }
+
+      // Create the new chat.
+      final newChat = await chatRepo.create(
+        title: '${sourceChat.title} (continued)',
+        model: sourceChat.model ?? settings.model,
+        systemPromptId: sourceChat.systemPromptId,
+        profileId: profileId,
+      );
+
+      // Copy all messages (with new ids, preserving order + content +
+      // reasoning + tool_calls).
+      for (final msg in sourceMessages) {
+        await msgRepo.upsert(ChatMessage(
+          id: _uuid.v4(),
+          chatId: newChat.id,
+          role: msg.role,
+          content: msg.content,
+          contentJson: msg.contentJson,
+          reasoning: msg.reasoning,
+          toolCalls: msg.toolCalls,
+          createdAt: msg.createdAt,
+        ));
+      }
+      await chatRepo.touch(newChat.id);
+
+      // Refresh the chat list and open the new chat.
+      _ref.invalidate(chatListProvider);
+      _ref.read(currentChatIdProvider.notifier).state = newChat.id;
+      return newChat.id;
+    } catch (e) {
+      state = state.copyWith(error: ApiError(
+        message: 'Failed to continue conversation: $e',
         kind: ApiErrorKind.unknown,
       ));
       return null;

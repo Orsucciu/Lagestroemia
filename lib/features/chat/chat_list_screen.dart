@@ -33,32 +33,76 @@ class ChatListScreen extends ConsumerWidget {
       appBar: AppBar(
         title: Text(l.navChats),
         actions: <Widget>[
-          // Continue from JSON (anonymous continue feature)
-          IconButton(
-            icon: const Icon(Icons.file_upload_outlined),
-            tooltip: 'Continue from JSON',
-            onPressed: () async {
-              final result = await FilePicker.platform.pickFiles(
-                type: FileType.custom,
-                allowedExtensions: ['json'],
-                withData: true,
-              );
-              if (result == null || result.files.isEmpty) return;
-              final bytes = result.files.first.bytes;
-              if (bytes == null) return;
-              final jsonString = utf8.decode(bytes);
-              final chatId = await ref
-                  .read(chatComposerProvider.notifier)
-                  .continueFromJson(jsonString);
-              if (chatId != null && context.mounted) {
-                context.go('/chat/$chatId');
-              } else {
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Failed to import conversation.')),
+          // Continue menu (JSON upload + history)
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.forward),
+            tooltip: 'Continue conversation',
+            onSelected: (value) async {
+              if (value == 'from_json') {
+                final result = await FilePicker.platform.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: ['json'],
+                  withData: true,
                 );
+                if (result == null || result.files.isEmpty) return;
+                final bytes = result.files.first.bytes;
+                if (bytes == null) return;
+                final jsonString = utf8.decode(bytes);
+                final chatId = await ref
+                    .read(chatComposerProvider.notifier)
+                    .continueFromJson(jsonString);
+                if (chatId != null && context.mounted) {
+                  context.go('/chat/$chatId');
+                } else {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content: Text('Failed to import conversation.')),
+                  );
+                }
+              } else if (value == 'from_history') {
+                final chatId = await showDialog<String>(
+                  context: context,
+                  builder: (_) => const _ContinueFromHistoryDialog(),
+                );
+                if (chatId == null) return;
+                final newChatId = await ref
+                    .read(chatComposerProvider.notifier)
+                    .continueFromHistory(chatId);
+                if (newChatId != null && context.mounted) {
+                  context.go('/chat/$newChatId');
+                } else {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content:
+                            Text('Failed to continue conversation.')),
+                  );
+                }
               }
             },
+            itemBuilder: (_) => const <PopupMenuEntry<String>>[
+              PopupMenuItem(
+                value: 'from_history',
+                child: Row(
+                  children: <Widget>[
+                    Icon(Icons.history, size: 18),
+                    SizedBox(width: 8),
+                    Text('Continue from history'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'from_json',
+                child: Row(
+                  children: <Widget>[
+                    Icon(Icons.file_upload_outlined, size: 18),
+                    SizedBox(width: 8),
+                    Text('Continue from JSON file'),
+                  ],
+                ),
+              ),
+            ],
           ),
           IconButton(
             icon: const Icon(Icons.add),
@@ -261,6 +305,63 @@ class _AnonTabBar extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Dialog that lists ALL past conversations from the SQLite history
+/// (across all profiles) so the user can pick one to continue in a
+/// fresh anonymous chat.
+class _ContinueFromHistoryDialog extends ConsumerWidget {
+  const _ContinueFromHistoryDialog();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final allChatsAsync = ref.watch(allChatsForHistoryProvider);
+    return AlertDialog(
+      title: const Text('Continue from history'),
+      content: SizedBox(
+        width: 500,
+        child: allChatsAsync.when(
+          data: (chats) {
+            if (chats.isEmpty) {
+              return const Center(
+                child: Text('No past conversations found.'),
+              );
+            }
+            return ListView.builder(
+              shrinkWrap: true,
+              itemCount: chats.length,
+              itemBuilder: (context, i) {
+                final chat = chats[i];
+                return ListTile(
+                  leading: const Icon(Icons.chat_bubble_outline, size: 18),
+                  title: Text(
+                    chat.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${chat.model ?? "default"} \u00b7 '
+                    '${chat.updatedAt.toLocal().toString().substring(0, 16)}'
+                    '${chat.profileId != null ? " \u00b7 Tab ${chat.profileId!.substring(0, 6)}" : ""}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  onTap: () => Navigator.of(context).pop(chat.id),
+                );
+              },
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text('Error: $e')),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+      ],
     );
   }
 }

@@ -41,6 +41,17 @@ class ChatRepository {
     return rows.map(Chat.fromMap).toList(growable: false);
   }
 
+  /// Returns ALL chats across ALL profiles (regardless of profile_id),
+  /// including archived ones. Used by the "Continue from history" dialog.
+  Future<List<Chat>> listAll({bool includeArchived = true}) async {
+    final rows = await _db.query(
+      'chats',
+      where: includeArchived ? null : 'archived = 0',
+      orderBy: 'updated_at DESC',
+    );
+    return rows.map(Chat.fromMap).toList(growable: false);
+  }
+
   /// Returns one chat by id, or null.
   Future<Chat?> findById(String id) async {
     final rows = await _db.query('chats', where: 'id = ?', whereArgs: [id]);
