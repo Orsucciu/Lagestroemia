@@ -17,7 +17,6 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: "3.27.4"
           cache: true
       - name: Install Linux deps
         run: |
@@ -50,7 +49,6 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: "3.27.4"
           cache: true
       - run: flutter pub get
       - run: flutter gen-l10n
@@ -75,7 +73,6 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: "3.27.4"
           cache: true
       - run: flutter pub get
       - run: flutter gen-l10n
@@ -96,7 +93,6 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: "3.27.4"
           cache: true
       - run: flutter pub get
       - run: flutter gen-l10n
