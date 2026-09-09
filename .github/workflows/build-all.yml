@@ -80,7 +80,16 @@ jobs:
       - run: flutter gen-l10n
       - run: flutter build apk --release --split-per-abi
       - name: Verify INTERNET permission in APK
-        run: unzip -p build/app/outputs/flutter-apk/app-arm64-v8a-release.apk AndroidManifest.xml | strings | grep -q INTERNET && echo 'OK' || (echo 'INTERNET missing!' && exit 1)
+        run: |
+          python3 -c "
+          import zipfile
+          with zipfile.ZipFile('build/app/outputs/flutter-apk/app-arm64-v8a-release.apk') as z:
+              axml = z.read('AndroidManifest.xml')
+          if b'I\x00n\x00t\x00e\x00r\x00n\x00e\x00t\00' in axml or 'INTERNET'.encode('utf-16-le') in axml:
+              print('INTERNET permission found in APK')
+          else:
+              print('ERROR: INTERNET permission missing!'); exit(1)
+          "
       - uses: actions/upload-artifact@v4
         with:
           name: lagestroemia-android-apks
