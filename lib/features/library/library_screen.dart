@@ -1,6 +1,5 @@
-// Library screen — local artifacts (code/markdown/html/svg/json) the
-// assistant produced during chats. Stub for the MVP; the artifacts list
-// itself lives at /library/artifacts.
+// Library screen — entry to the Library views (artifacts + files).
+// Each is a separate route so deep-linking works.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,13 +23,11 @@ class LibraryScreen extends ConsumerWidget {
             subtitle: Text(l.libraryArtifactsEmpty),
             onTap: () => context.go('/library/artifacts'),
           ),
-          // Files view not implemented in MVP — leave the tile to keep the
-          // section discoverable.
           ListTile(
             leading: const Icon(Icons.attach_file),
             title: Text(l.libraryTabsFiles),
-            enabled: false,
-            onTap: null,
+            subtitle: const Text('Browse all attachments across all chats'),
+            onTap: () => context.go('/library/files'),
           ),
         ],
       ),

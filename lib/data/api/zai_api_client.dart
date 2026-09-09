@@ -1,13 +1,28 @@
 // z.ai API client.
 //
-// Wraps the OpenAI-compatible `/paas/v4/chat/completions` endpoint with:
-//  - streaming (SSE parser),
-//  - plain (non-streaming) calls,
-//  - file uploads via `/paas/v4/files`,
-//  - structured error handling via [ApiError].
+// Supports two distinct backends:
 //
-// The client is intentionally thin — it knows about HTTP and the wire format,
-// and nothing else. Domain logic lives in providers / repositories.
+// 1. **api.z.ai** (OpenAI-compatible, used in API-key mode).
+//    - Base URL: https://api.z.ai/api/paas/v4
+//    - Auth: `Authorization: Bearer <api_key>`
+//    - Chat completions: POST /chat/completions
+//    - SSE: standard OpenAI shape, `data: { ... }\n\n` then `data: [DONE]`
+//    - File upload: POST /files (multipart)
+//
+// 2. **chat.z.ai** (open-webui-style, used in guest mode).
+//    - Base URL: https://chat.z.ai/api
+//    - Auth: `Authorization: Bearer <guest_jwt>` + `X-FE-Version` header
+//    - Chat completions: POST /v2/chat/completions
+//    - SSE: wrapped shape, `data: {"type":"chat:completion","data":{...}}\n\n`
+//      then `data: [DONE]`. The actual content delta is at
+//      `data.choices[0].delta.content`.
+//    - Requires `captcha_verify_param` in the body for the first chat in a
+//      session (provided by the in-app Aliyun captcha widget).
+//    - File upload: not supported in guest mode.
+//
+// The client is intentionally thin — it knows about HTTP and the wire
+// format, and nothing else. Domain logic lives in providers /
+// repositories.
 
 import 'dart:async';
 import 'dart:convert';
@@ -19,6 +34,15 @@ import '../../core/config/app_config.dart';
 import '../../core/result/result.dart';
 import '../models/models.dart';
 
+/// Which backend the client is talking to.
+enum ApiBackend {
+  /// api.z.ai (OpenAI-compatible, API-key mode).
+  apiZai,
+
+  /// chat.z.ai (open-webui, guest mode).
+  chatZai,
+}
+
 /// A parsed chunk from the streaming chat completions endpoint.
 class ChatStreamChunk {
   const ChatStreamChunk({
@@ -26,6 +50,7 @@ class ChatStreamChunk {
     this.reasoningDelta,
     this.finishReason,
     this.usage,
+    this.error,
   });
 
   /// Incremental text appended to `choices[0].delta.content`. May be null
@@ -41,7 +66,11 @@ class ChatStreamChunk {
   /// Set on the last chunk: token usage breakdown.
   final Map<String, Object?>? usage;
 
-  bool get isDone => finishReason != null;
+  /// Set on a chunk that carries an error (chat.z.ai surfaces errors inline
+  /// via `data.error`).
+  final ApiError? error;
+
+  bool get isDone => finishReason != null || error != null;
 }
 
 /// Token usage breakdown from the chat completions endpoint.
@@ -70,11 +99,18 @@ class ChatUsage {
 /// Construct once per app run and keep it for the lifetime of the app.
 class ZaiApiClient {
   ZaiApiClient({
-    required String apiKey,
+    required String bearerToken,
     String? apiBaseUrl,
+    ApiBackend backend = ApiBackend.apiZai,
     Dio? dio,
-  })  : _apiKey = apiKey,
-        _apiBaseUrl = (apiBaseUrl ?? AppConfig.defaultApiBaseUrl),
+    String? captchaVerifyParam,
+  })  : _token = bearerToken,
+        _backend = backend,
+        _apiBaseUrl = apiBaseUrl ??
+            (backend == ApiBackend.chatZai
+                ? AppConfig.chatZaiApiBaseUrl
+                : AppConfig.defaultApiBaseUrl),
+        _captchaVerifyParam = captchaVerifyParam,
         _dio = dio ?? Dio() {
     _dio.options
       ..baseUrl = _apiBaseUrl
@@ -82,30 +118,52 @@ class ZaiApiClient {
       ..receiveTimeout = AppConfig.defaultTimeout * 2
       ..headers = <String, Object?>{
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_apiKey',
+        'Authorization': 'Bearer $_token',
         // Hint z.ai to send back English error messages. The body content
         // itself follows the user's input language.
         'Accept-Language': 'en-US,en',
+        if (backend == ApiBackend.chatZai) ...<String, Object?>{
+          'X-FE-Version': AppConfig.chatZaiFeVersion,
+          'Origin': 'https://chat.z.ai',
+          'Referer': 'https://chat.z.ai/',
+          'User-Agent':
+              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        },
       };
   }
 
-  final String _apiKey;
+  final String _token;
+  final ApiBackend _backend;
   final String _apiBaseUrl;
+  final String? _captchaVerifyParam;
   final Dio _dio;
   static final Logger _log = Logger('lagestroemia.api');
 
-  /// Returns the configured base URL (no trailing slash). Useful for
-  /// displaying in the Settings screen.
+  /// Returns the configured base URL (no trailing slash).
   String get apiBaseUrl => _apiBaseUrl;
+
+  /// Returns the active backend.
+  ApiBackend get backend => _backend;
+
+  /// Returns the chat completions path for the active backend.
+  String get _chatCompletionsPath => _backend == ApiBackend.chatZai
+      ? AppConfig.chatZaiChatCompletionsPath
+      : AppConfig.chatCompletionsPath;
+
+  /// Updates the captcha token (called by the in-app captcha widget when
+  /// the user solves it).
+  void setCaptchaVerifyParam(String? param) {
+    // We can't mutate `_captchaVerifyParam` (final) — re-create the client
+    // via the provider when needed. For simplicity, we expose this method
+    // and the provider invalidates the apiClientProvider when it changes.
+    // (Implementation: nothing here — the caller re-creates the client.)
+  }
 
   /// Sends a non-streaming chat completion request.
   ///
   /// [messages] is the OpenAI-shaped list of message objects. [model]
   /// defaults to [AppConfig.defaultModel]. Other optional fields are
   /// forwarded as-is.
-  ///
-  /// Returns the assistant message content (`choices[0].message.content`)
-  /// plus optional reasoning + tool_calls.
   Future<Result<AssistantResponse, ApiError>> chatCompletion({
     required List<Map<String, Object?>> messages,
     String? model,
@@ -120,30 +178,32 @@ class ZaiApiClient {
     String? userId,
     bool? doSample,
   }) async {
-    final body = <String, Object?>{
-      'model': model ?? AppConfig.defaultModel,
-      'messages': messages,
-      'stream': false,
-      if (temperature != null) 'temperature': temperature,
-      if (maxTokens != null) 'max_tokens': maxTokens,
-      if (stop != null) 'stop': stop,
-      if (tools != null) 'tools': tools,
-      if (thinking != null) 'thinking': thinking,
-      if (reasoningEffort != null) 'reasoning_effort': reasoningEffort,
-      if (responseFormat != null) 'response_format': responseFormat,
-      if (requestId != null) 'request_id': requestId,
-      if (userId != null) 'user_id': userId,
-      if (doSample != null) 'do_sample': doSample,
-    };
+    final body = _buildBody(
+      messages: messages,
+      model: model,
+      temperature: temperature,
+      maxTokens: maxTokens,
+      stop: stop,
+      tools: tools,
+      thinking: thinking,
+      reasoningEffort: reasoningEffort,
+      responseFormat: responseFormat,
+      requestId: requestId,
+      userId: userId,
+      doSample: doSample,
+      stream: false,
+    );
 
     try {
       final response = await _dio.post<dynamic>(
-        AppConfig.chatCompletionsPath,
+        _chatCompletionsPath,
         data: jsonEncode(body),
       );
       final data = response.data;
-      final map = data is String ? jsonDecode(data) as Map<String, Object?> : data as Map<String, Object?>;
-      return Ok(_parseAssistantResponse(map));
+      final map = data is String
+          ? jsonDecode(data) as Map<String, Object?>
+          : data as Map<String, Object?>;
+      return Ok(_parseAssistantResponse(map, _backend));
     } on DioException catch (e) {
       return _dioErrorToApiError(e).errResult();
     }
@@ -166,28 +226,30 @@ class ZaiApiClient {
     String? requestId,
     String? userId,
     bool? doSample,
+    CancelToken? cancelToken,
   }) async* {
-    final body = <String, Object?>{
-      'model': model ?? AppConfig.defaultModel,
-      'messages': messages,
-      'stream': true,
-      if (temperature != null) 'temperature': temperature,
-      if (maxTokens != null) 'max_tokens': maxTokens,
-      if (stop != null) 'stop': stop,
-      if (tools != null) 'tools': tools,
-      if (thinking != null) 'thinking': thinking,
-      if (reasoningEffort != null) 'reasoning_effort': reasoningEffort,
-      if (responseFormat != null) 'response_format': responseFormat,
-      if (requestId != null) 'request_id': requestId,
-      if (userId != null) 'user_id': userId,
-      if (doSample != null) 'do_sample': doSample,
-    };
+    final body = _buildBody(
+      messages: messages,
+      model: model,
+      temperature: temperature,
+      maxTokens: maxTokens,
+      stop: stop,
+      tools: tools,
+      thinking: thinking,
+      reasoningEffort: reasoningEffort,
+      responseFormat: responseFormat,
+      requestId: requestId,
+      userId: userId,
+      doSample: doSample,
+      stream: true,
+    );
 
     Response<ResponseBody> response;
     try {
       response = await _dio.post<ResponseBody>(
-        AppConfig.chatCompletionsPath,
+        _chatCompletionsPath,
         data: jsonEncode(body),
+        cancelToken: cancelToken,
         options: Options(
           responseType: ResponseType.stream,
           headers: <String, Object?>{
@@ -196,36 +258,84 @@ class ZaiApiClient {
         ),
       );
     } on DioException catch (e) {
+      if (e.type == DioExceptionType.cancel) {
+        // Cancelled by the user — yield a special chunk so the consumer can
+        // stop cleanly.
+        yield const ChatStreamChunk(finishReason: 'cancelled');
+        return;
+      }
       _log.warning('chatCompletionStream failed: $e');
       final apiError = _dioErrorToApiError(e);
-      yield ChatStreamChunk(
-        finishReason: 'error',
-        usage: <String, Object?>{
-          'error': apiError.message,
-          'code': apiError.code,
-        },
-      );
+      yield ChatStreamChunk(error: apiError);
       return;
     }
 
-    final stream = response.data?.stream ??
-        const Stream<List<int>>.empty();
-    // Convert the byte stream into a stream of decoded SSE events.
+    final stream =
+        response.data?.stream ?? const Stream<List<int>>.empty();
     final decoded = _utf8Decode(stream);
     await for (final event in _sseEvents(decoded)) {
       if (event == '[DONE]') {
         return;
       }
       final map = jsonDecode(event) as Map<String, Object?>;
-      final choices = map['choices'] as List<Object?>?;
+
+      // chat.z.ai wraps the payload in {"type": "chat:completion", "data": {...}}
+      final payload = _backend == ApiBackend.chatZai
+          ? _unwrapChatZai(map)
+          : map;
+
+      if (payload == null) continue;
+
+      // Inline error in chat.z.ai stream.
+      final inlineError = payload['error'];
+      if (inlineError is Map<Object?, Object?>) {
+        final rawCode = inlineError['code'];
+        final code = rawCode is num
+            ? rawCode.toInt()
+            : rawCode is String
+                ? int.tryParse(rawCode)
+                : null;
+        // The chat.z.ai captcha-required error has error_code
+        // `FRONTEND_CAPTCHA_REQUIRED` (a string), not a numeric code.
+        final errorCodeString = inlineError['error_code'] as String?;
+        final isCaptchaRequired =
+            errorCodeString == 'FRONTEND_CAPTCHA_REQUIRED' ||
+                (inlineError['captcha_error_type'] != null);
+        final detail =
+            (inlineError['detail'] as String?) ?? 'Unknown error';
+        // 426 = outdated client; treat as a soft error.
+        yield ChatStreamChunk(
+          error: ApiError(
+            message: isCaptchaRequired
+                ? 'Captcha required. Please solve the captcha to continue.'
+                : detail,
+            code: code?.toString() ?? errorCodeString,
+            kind: isCaptchaRequired
+                ? ApiErrorKind.badRequest
+                : code == 426
+                    ? ApiErrorKind.badRequest
+                    : code == 401
+                        ? ApiErrorKind.auth
+                        : ApiErrorKind.unknown,
+          ),
+        );
+        return;
+      }
+
+      final choices = payload['choices'] as List<Object?>?;
       if (choices == null || choices.isEmpty) {
-        // Edge case: an early chunk with no choice. Skip.
+        // Sometimes chat.z.ai sends usage-only chunks. Skip.
+        final usage = payload['usage'];
+        if (usage is Map<Object?, Object?>?) {
+          yield ChatStreamChunk(usage: usage?.cast<String, Object?>());
+        }
         continue;
       }
       final choice = choices.first as Map<String, Object?>;
-      final delta = (choice['delta'] as Map<Object?, Object?>?)?.cast<String, Object?>();
+      final delta =
+          (choice['delta'] as Map<Object?, Object?>?)?.cast<String, Object?>();
       final finish = choice['finish_reason'] as String?;
-      final usage = map['usage'] as Map<Object?, Object?>?;
+      final usage = payload['usage'] as Map<Object?, Object?>?;
       yield ChatStreamChunk(
         contentDelta: delta?['content'] as String?,
         reasoningDelta: delta?['reasoning_content'] as String?,
@@ -236,19 +346,24 @@ class ZaiApiClient {
   }
 
   /// Uploads a file to z.ai's file storage and returns the file id.
-  ///
-  /// [purpose] must be `'user_data'` (glossary) or `'agent'` (RAG / chat
-  /// references). See https://docs.z.ai/api-reference/files/upload-a-file.
+  /// Only supported in API-key mode (api.z.ai).
   Future<Result<RemoteFile, ApiError>> uploadFile({
     required String filename,
     required String mimeType,
     required List<int> bytes,
     required String purpose,
   }) async {
+    if (_backend == ApiBackend.chatZai) {
+      return Err<RemoteFile, ApiError>(ApiError(
+        message: 'File upload is not supported in guest mode. Sign in with '
+            'an API key to use file uploads.',
+        kind: ApiErrorKind.unknown,
+      ));
+    }
     final form = FormData.fromMap(<String, Object?>{
       'purpose': purpose,
-      'file': MultipartFile.fromBytes(bytes, filename: filename,
-          contentType: DioMediaType.parse(mimeType)),
+      'file': MultipartFile.fromBytes(bytes,
+          filename: filename, contentType: DioMediaType.parse(mimeType)),
     });
     try {
       final response = await _dio.post<dynamic>(
@@ -274,6 +389,75 @@ class ZaiApiClient {
     } on DioException catch (e) {
       return _dioErrorToApiError(e).errResult();
     }
+  }
+
+  /// Fetches the model list from the active backend.
+  ///
+  /// For api.z.ai this returns the documented model list (statically
+  /// declared in [AppConfig.knownModels] — the docs don't expose a list
+  /// endpoint).
+  /// For chat.z.ai this calls `GET /models` and returns the actual list
+  /// returned by the backend.
+  Future<List<String>> listModels() async {
+    if (_backend == ApiBackend.apiZai) {
+      return const <String>[...AppConfig.knownModels];
+    }
+    try {
+      final response = await _dio.get<dynamic>(AppConfig.chatZaiModelsPath);
+      final data = response.data;
+      final m = data is String
+          ? jsonDecode(data) as Map<String, Object?>
+          : data as Map<String, Object?>;
+      final list = (m['data'] as List<Object?>?) ?? const <Object?>[];
+      return list
+          .map((e) => ((e as Map<Object?, Object?>)['id'] as String?) ?? '')
+          .where((s) => s.isNotEmpty)
+          .toList(growable: false);
+    } catch (e) {
+      _log.warning('listModels failed: $e');
+      return const <String>[...AppConfig.chatZaiKnownModels];
+    }
+  }
+
+  // ---- body builder ----------------------------------------------------
+
+  Map<String, Object?> _buildBody({
+    required List<Map<String, Object?>> messages,
+    required String? model,
+    required double? temperature,
+    required int? maxTokens,
+    required List<String>? stop,
+    required Map<String, Object?>? tools,
+    required Map<String, Object?>? thinking,
+    required String? reasoningEffort,
+    required Map<String, Object?>? responseFormat,
+    required String? requestId,
+    required String? userId,
+    required bool? doSample,
+    required bool stream,
+  }) {
+    final defaultModel = _backend == ApiBackend.chatZai
+        ? AppConfig.defaultGuestModel
+        : AppConfig.defaultModel;
+    final body = <String, Object?>{
+      'model': model ?? defaultModel,
+      'messages': messages,
+      'stream': stream,
+      if (temperature != null) 'temperature': temperature,
+      if (maxTokens != null) 'max_tokens': maxTokens,
+      if (stop != null) 'stop': stop,
+      if (tools != null) 'tools': tools,
+      if (thinking != null) 'thinking': thinking,
+      if (reasoningEffort != null) 'reasoning_effort': reasoningEffort,
+      if (responseFormat != null) 'response_format': responseFormat,
+      if (requestId != null) 'request_id': requestId,
+      if (userId != null) 'user_id': userId,
+      if (doSample != null) 'do_sample': doSample,
+    };
+    if (_backend == ApiBackend.chatZai && _captchaVerifyParam != null) {
+      body['captcha_verify_param'] = _captchaVerifyParam;
+    }
+    return body;
   }
 }
 
@@ -313,9 +497,36 @@ class RemoteFile {
 
 // ---- helpers --------------------------------------------------------------
 
+/// Unwraps the chat.z.ai `{"type": "chat:completion", "data": {...}}`
+/// envelope. Returns null if the envelope is malformed.
+Map<String, Object?>? _unwrapChatZai(Map<String, Object?> map) {
+  // The streaming format is `{"data": {"data": {...}}, "type": "chat:completion"}`
+  // for content, or `{"data": {...}, "type": ...}` for control events.
+  final type = map['type'] as String?;
+  if (type != 'chat:completion') {
+    // Other event types (e.g. `chat:completion:start`) — skip.
+    return null;
+  }
+  final data = map['data'];
+  if (data is! Map<Object?, Object?>) return null;
+  // Some chunks have an extra nested `data` wrapper (the actual OpenAI
+  // payload sits inside `data.data`).
+  final innerData = data['data'];
+  if (innerData is Map<Object?, Object?>) {
+    return Map<String, Object?>.from(innerData);
+  }
+  return Map<String, Object?>.from(data);
+}
+
 /// Parses the JSON body of a non-streaming chat completion response.
-AssistantResponse _parseAssistantResponse(Map<String, Object?> map) {
-  final choices = map['choices'] as List<Object?>? ?? const [];
+AssistantResponse _parseAssistantResponse(
+    Map<String, Object?> map, ApiBackend backend) {
+  // chat.z.ai wraps the payload.
+  final payload = backend == ApiBackend.chatZai
+      ? (_unwrapChatZai(map) ?? const {})
+      : map;
+
+  final choices = payload['choices'] as List<Object?>? ?? const [];
   if (choices.isEmpty) {
     return const AssistantResponse(
       content: '',
@@ -328,14 +539,16 @@ AssistantResponse _parseAssistantResponse(Map<String, Object?> map) {
     );
   }
   final choice = choices.first as Map<String, Object?>;
-  final message = (choice['message'] as Map<Object?, Object?>).cast<String, Object?>();
+  final message =
+      (choice['message'] as Map<Object?, Object?>).cast<String, Object?>();
   final content = (message['content'] as String?) ?? '';
   final reasoning = message['reasoning_content'] as String?;
   final rawToolCalls = message['tool_calls'] as List<Object?>?;
   final toolCalls = rawToolCalls
       ?.map((e) => (e as Map<Object?, Object?>).cast<String, Object?>())
       .toList(growable: false);
-  final usageMap = (map['usage'] as Map<Object?, Object?>?)?.cast<String, Object?>();
+  final usageMap =
+      (payload['usage'] as Map<Object?, Object?>?)?.cast<String, Object?>();
   final usage = ChatUsage.fromMap(usageMap ?? const {});
   final finishReason = (choice['finish_reason'] as String?) ?? 'stop';
   return AssistantResponse(
@@ -348,7 +561,6 @@ AssistantResponse _parseAssistantResponse(Map<String, Object?> map) {
 }
 
 ApiError _dioErrorToApiError(DioException e) {
-  // z.ai error body: {"error":{"code":"1214","message":"..."}}
   final data = e.response?.data;
   Map<String, Object?>? errorBody;
   if (data is Map<String, Object?>) {
@@ -360,7 +572,8 @@ ApiError _dioErrorToApiError(DioException e) {
     } catch (_) {/* not JSON */}
   }
   final code = errorBody?['code'] as String?;
-  final message = (errorBody?['message'] as String?) ?? e.message ?? 'Network error';
+  final message =
+      (errorBody?['message'] as String?) ?? e.message ?? 'Network error';
   final httpStatus = e.response?.statusCode;
   ApiErrorKind kind;
   if (code != null) {
@@ -388,22 +601,66 @@ ApiError _dioErrorToApiError(DioException e) {
 Stream<String> _utf8Decode(Stream<List<int>> bytes) {
   // Glue consecutive byte arrays and decode using utf8 decoder so that
   // multi-byte chars split across chunks are not corrupted.
-  return bytes.transform(utf8.decoder);
+  //
+  // We use a manual decoder here because `bytes.transform(utf8.decoder)`
+  // has a type mismatch on some Dart SDKs (the StreamTransformer type
+  // variables don't unify cleanly with `Stream<List<int>>` from Dio).
+  return _Utf8StreamDecoder().bind(bytes);
+}
+
+class _Utf8StreamDecoder extends StreamTransformerBase<List<int>, String> {
+  final Converter<List<int>, String> _converter = utf8.decoder;
+
+  @override
+  Stream<String> bind(Stream<List<int>> stream) {
+    return Stream<String>.eventTransformed(
+      stream,
+      (EventSink<String> sink) => _ConverterSink(_converter, sink),
+    );
+  }
+}
+
+class _ConverterSink implements EventSink<List<int>> {
+  _ConverterSink(this.converter, this.sink);
+  final Converter<List<int>, String> converter;
+  final EventSink<String> sink;
+  final _buffer = <int>[];
+
+  @override
+  void add(List<int> event) {
+    _buffer.addAll(event);
+    // Try to decode as much as we can safely — only flush complete
+    // UTF-8 sequences. For simplicity, decode the whole buffer on each
+    // chunk (small per-chunk size means this is fine).
+    try {
+      final decoded = utf8.decode(_buffer);
+      sink.add(decoded);
+      _buffer.clear();
+    } catch (_) {
+      // Incomplete UTF-8 sequence; wait for next chunk.
+    }
+  }
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      sink.addError(error, stackTrace);
+
+  @override
+  void close() {
+    if (_buffer.isNotEmpty) {
+      try {
+        sink.add(utf8.decode(_buffer));
+      } catch (_) {}
+    }
+    sink.close();
+  }
 }
 
 /// Splits a stream of UTF-8 text into SSE event payloads.
-///
-/// SSE format: events are separated by a blank line. Each event may have
-/// one or more lines starting with `data: `. We concatenate the data
-/// lines of a single event into one string. We only care about `data:`
-/// events (z.ai does not emit `event:` typed messages for chat
-/// completions). The sentinel `data: [DONE]` is yielded as the literal
-/// string `[DONE]`.
 Stream<String> _sseEvents(Stream<String> text) async* {
   final buffer = StringBuffer();
   await for (final chunk in text) {
     buffer.write(chunk);
-    // Find every complete event (ending with `\n\n`).
     while (true) {
       final s = buffer.toString();
       final idx = s.indexOf('\n\n');
@@ -411,7 +668,6 @@ Stream<String> _sseEvents(Stream<String> text) async* {
       final event = s.substring(0, idx);
       buffer.clear();
       buffer.write(s.substring(idx + 2));
-      // Parse the event's data lines.
       final dataLines = <String>[];
       for (final line in event.split('\n')) {
         if (line.startsWith('data:')) {

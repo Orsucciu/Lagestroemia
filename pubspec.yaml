@@ -54,6 +54,13 @@ dependencies:
   # URL launching (for opening z.ai dashboard links, OAuth flows, etc.)
   url_launcher: ^6.3.1
 
+  # In-app webview — used ONLY for the Aliyun captcha widget in guest mode.
+  # We do not wrap the chat.z.ai UI; we render the captcha SDK in a small
+  # inline widget so the user can solve the challenge without leaving the
+  # app. The captcha returns a `captcha_verify_param` string which is then
+  # sent in the chat completion request body.
+  flutter_inappwebview: ^6.1.5
+
   # Logging
   logging: ^1.3.0
 

@@ -1,5 +1,7 @@
-// Chat list screen — the home screen. Lists all chats and lets the user
-// create a new one, rename, archive or delete.
+// Chat list screen — the home screen. Lists all chats with a search bar
+// and lets the user create, rename, archive or delete.
+//
+// Search filters by title (case-insensitive substring match).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +11,9 @@ import '../../l10n/generated/app_localizations.dart';
 import '../../state/chat_state.dart';
 import '../../data/models/models.dart';
 
+/// Search query for the chat list. Empty means "show all".
+final chatListSearchProvider = StateProvider<String>((ref) => '');
+
 class ChatListScreen extends ConsumerWidget {
   const ChatListScreen({super.key});
 
@@ -16,6 +21,8 @@ class ChatListScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l = AppLocalizations.of(context);
     final chatsAsync = ref.watch(chatListProvider);
+    final search = ref.watch(chatListSearchProvider);
+
     return Scaffold(
       appBar: AppBar(
         title: Text(l.navChats),
@@ -33,18 +40,48 @@ class ChatListScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: chatsAsync.when(
-        data: (chats) => chats.isEmpty
-            ? Center(child: Text(l.commonEmpty))
-            : ListView.builder(
-                itemCount: chats.length,
-                itemBuilder: (_, i) {
-                  final chat = chats[i];
-                  return _ChatTile(chat: chat);
-                },
+      body: Column(
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: TextField(
+              decoration: InputDecoration(
+                hintText: l.commonSearch,
+                prefixIcon: const Icon(Icons.search),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('$l.commonError: $e')),
+              onChanged: (value) =>
+                  ref.read(chatListSearchProvider.notifier).state = value,
+            ),
+          ),
+          Expanded(
+            child: chatsAsync.when(
+              data: (chats) {
+                final filtered = search.isEmpty
+                    ? chats
+                    : chats
+                        .where((c) => c.title.toLowerCase().contains(
+                              search.toLowerCase(),
+                            ))
+                        .toList(growable: false);
+                if (filtered.isEmpty) {
+                  return Center(child: Text(l.commonEmpty));
+                }
+                return ListView.builder(
+                  itemCount: filtered.length,
+                  itemBuilder: (_, i) {
+                    final chat = filtered[i];
+                    return _ChatTile(chat: chat);
+                  },
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (e, _) => Center(child: Text('${l.commonError}: $e')),
+            ),
+          ),
+        ],
       ),
     );
   }

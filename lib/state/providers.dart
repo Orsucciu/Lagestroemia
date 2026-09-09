@@ -92,18 +92,30 @@ final kvRepositoryProvider = FutureProvider<KvRepository>((ref) async {
 
 // ---- api client --------------------------------------------------------
 
-/// Resolves to a [ZaiApiClient] using the current API key + base URL from
-/// [settingsStateProvider]. Returns `null` if the user is signed out so
-/// the UI can avoid showing the chat composer.
+/// Holds the current captcha verify param (set by the in-app captcha
+/// widget when the user solves the Aliyun captcha in guest mode).
+final captchaVerifyParamProvider = StateProvider<String?>((ref) => null);
+
+/// Resolves to a [ZaiApiClient] using the current auth mode and
+/// captcha param. Returns `null` if the user is not signed in at all.
 final apiClientProvider = Provider<ZaiApiClient?>((ref) {
-  final settings = ref.watch(settingsStateProvider);
   final auth = ref.watch(authStateProvider);
+  final settings = ref.watch(settingsStateProvider);
+  final captchaParam = ref.watch(captchaVerifyParamProvider);
   if (!auth.signedIn) return null;
   final dio = ref.watch(dioProvider);
+  final backend = auth.mode == AuthMode.guest
+      ? ApiBackend.chatZai
+      : ApiBackend.apiZai;
+  // For API-key mode, the user may have overridden the base URL via
+  // Settings; for guest mode, always use chat.z.ai.
+  final baseUrl = auth.mode == AuthMode.guest ? null : settings.apiBaseUrl;
   return ZaiApiClient(
-    apiKey: auth.apiKey!,
-    apiBaseUrl: settings.apiBaseUrl,
+    bearerToken: auth.bearerToken!,
+    apiBaseUrl: baseUrl,
+    backend: backend,
     dio: dio,
+    captchaVerifyParam: captchaParam,
   );
 });
 

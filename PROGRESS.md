@@ -196,37 +196,169 @@ Gtk-WARNING **: cannot open display:`) — expected in this sandbox.
 
 ---
 
+## 2026-09-09 — Guest mode + 9 issues fixed
+
+### `[feature]` Two-mode auth (guest + API-key)
+
+Reverse-engineered the chat.z.ai web app to figure out how the
+website itself does unauthenticated chat:
+
+- `GET https://chat.z.ai/api/v1/auths/` returns a **guest JWT** with
+  no captcha required — this is the same anonymous flow the website
+  uses when a user opens chat.z.ai without logging in.
+- The chat endpoint is `POST /api/v2/chat/completions` (NOT
+  `/api/chat/completions` or `/openai/chat/completions` as we initially
+  probed — those return 404). It accepts the guest JWT as `Bearer`
+  + `X-FE-Version: prod-fe-1.1.93` header.
+- The endpoint requires an Aliyun captcha per session, provided as
+  `captcha_verify_param` in the request body. Without it, the SSE
+  stream yields an inline error with `error_code: "FRONTEND_CAPTCHA_REQUIRED"`.
+- The Aliyun captcha SDK lives at
+  `https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js`
+  and uses scene id `didk33e0`, prefix `no8xfe`, region `sgp`.
+- chat.z.ai wraps the SSE payload in a
+  `{"type": "chat:completion", "data": {...}}` envelope (which itself
+  has a nested `data` field with the OpenAI-shaped content).
+- The actual model ids on chat.z.ai are different from api.z.ai's:
+  `glm-4.7`, `glm-4.6v`, `glm-5.3`, `glm-5.2`, `GLM-5-Turbo`,
+  `GLM-5v-Turbo`, `0727-106B-API` (=GLM-4.5-Air), `0727-360B-API`
+  (=GLM-4.5), `x-preview-l` (=GLM-5.3-Flash), `deep-research`
+  (=Z1-Rumination), `zero` (=Z1-32B).
+
+### `[feature]` Two backends in `ZaiApiClient`
+
+Refactored the API client to support both backends via an
+`ApiBackend` enum:
+
+- `ApiBackend.apiZai` — `https://api.z.ai/api/paas/v4` (OpenAI-compat,
+  requires API key, no captcha).
+- `ApiBackend.chatZai` — `https://chat.z.ai/api` (open-webui-style,
+  accepts guest JWT, requires captcha per session).
+
+Both share the same `chatCompletion` / `chatCompletionStream` /
+`uploadFile` / `listModels` API. The SSE parser was extended to
+unwrap the chat.z.ai envelope. `chatCompletionStream` now accepts
+an optional `CancelToken` so the Stop button can actually cancel
+the in-flight HTTP request (issue #6).
+
+### `[feature]` Captcha widget
+
+Added `lib/widgets/aliyun_captcha_widget.dart` — an in-app webview
+(via `flutter_inappwebview`) that loads AliyunCaptcha.js and forwards
+the `captcha_verify_param` string back to Dart via JS interop. This
+is the **only** piece of the app that uses a webview; it renders
+*only* the captcha (not the chat.z.ai UI), as required by the user's
+"no webview to cheat" rule.
+
+### `[feature]` Auth flow redesign
+
+`AuthState` now has a `mode` field (none/guest/apiKey). The splash
+screen automatically fetches a guest JWT on first launch — no auth
+UI is shown by default. The auth screen only appears if the guest
+fetch fails (network error, chat.z.ai down) or when the user
+explicitly chooses "Switch to API key" from Settings.
+
+The auth screen now offers:
+
+- **"Continue as guest (free)"** as the primary action.
+- **"I have a z.ai API key"** as a collapsible secondary path.
+
+### `[feature]` Settings redesign
+
+The Settings screen shows the current auth mode and lets the user
+switch. In guest mode it shows a "Refresh guest session" button.
+On the Web target it shows a warning about the lack of at-rest
+encryption for the API key (issue #3).
+
+### `[feature]` Chat screen upgrades
+
+- App bar shows the current chat title.
+- Model picker uses the right list for the current auth mode.
+- Per-chat system prompt picker (issue #4).
+- Export chat menu (issue #10) — Markdown or JSON via FilePicker.saveFile.
+- Composer file picker (issue #1) — multiple files, with chips above
+  the text field and per-chip remove.
+- Inline image attachments render in the message bubble (issue #5).
+- Tool calls render in a collapsible panel under the assistant
+  message (issue #11).
+- Captcha prompt bar appears when the chat backend returns
+  `FRONTEND_CAPTCHA_REQUIRED`.
+- Stop button cancels the in-flight HTTP request (issue #6).
+
+### `[feature]` Files library (issue #7)
+
+`AttachmentRepository.listAll()` joins `attachments` ↔ `messages`
+↔ `chats` and returns `AttachmentWithChat` with the parent chat's
+title. New `/library/files` route renders an ExpansionTile per
+chat with thumbnails for images and a download button.
+
+### `[feature]` Search (issue #9)
+
+`chatListSearchProvider` and `artifactsSearchProvider` StateProviders
+power a search bar at the top of the chat list and the artifacts
+library. Filtering is case-insensitive substring match on title
+(chats) or name+language+body (artifacts).
+
+### `[build]` Scripts to recreate the environment
+
+Two scripts in `/home/z/my-project/scripts/`:
+
+- `build-sysroot.sh` — idempotent bash that re-downloads all the
+  `.deb` files needed for the GTK3 dev sysroot, patches `.pc` files
+  to point at the sysroot, stubs missing packages (cloudproviders,
+  atspi-2, dbus-1), and creates `.so` symlinks for system-provided
+  runtime libs. Re-run after a workspace wipe.
+- `env.sh` — sourceable file that sets `PATH`, `LD_LIBRARY_PATH`,
+  and `PKG_CONFIG_PATH` correctly. Use as
+  `/home/z/my-project/scripts/env.sh flutter build linux --release`.
+
+### `[test]` Live integration tests
+
+`test/zai_api_live_test.dart` is tagged `live` and runs against the
+real chat.z.ai backend. Three tests:
+
+1. Guest signup returns a JWT (>40 chars).
+2. Chat completion endpoint returns `FRONTEND_CAPTCHA_REQUIRED`
+   when called without a captcha — proves the endpoint is reachable
+   and our auth + error parsing is correct.
+3. `listModels()` returns a non-empty list including `glm-4.7`.
+
+All 3 tests pass.
+
+### `[build]` Linux build still works
+
+`flutter build linux --release` produces
+`build/linux/x64/release/bundle/lagestroemia` (Linux x64 binary).
+The binary runs cleanly (only fails on display in the headless
+sandbox).
+
+### `[docs]` Updated PROGRESS.md (this section).
+
+---
+
 ## Outstanding work for future sessions
 
 The following tasks are tracked as GitHub Issues under the
 **MVP polish** milestone. Each issue number is in parentheses.
 
-### High priority
+### High priority — DONE in this session
 
-1. **Run the unit tests** under `flutter test` and fix any failures
-   (current smoke test should pass — it just pumps the splash screen).
-2. **Wire the file_picker** into the chat composer's attach button.
-   The state plumbing (`ChatComposerNotifier.attachFile`) is already
-   there; only the UI call to `FilePicker.platform.pickFiles()` is
-   missing. (#1)
-3. **Render image attachments** inline in the chat list when the user
-   message has `content_json` set. (#5)
-4. **Stop button** actually cancels the in-flight HTTP request — pass
-   a `CancelToken` into `ZaiApiClient.chatCompletionStream`. (#6)
-5. **Implement the Files view** at `/library/files` (list attachments
-   from the SQLite `attachments` table). (#7)
+1. ~~**Run the unit tests** under `flutter test` and fix any failures~~ ✅
+2. ~~**Wire the file_picker** into the chat composer's attach button.~~ ✅ (#1)
+3. ~~**Render image attachments** inline in the chat list.~~ ✅ (#5)
+4. ~~**Stop button** actually cancels the in-flight HTTP request.~~ ✅ (#6)
+5. ~~**Implement the Files view** at `/library/files`.~~ ✅ (#7)
 
-### Medium priority
+### Medium priority — DONE in this session
 
 6. **JWT auth mode** — for keys in form `<id>.<secret>`, sign a
    short-lived JWT (HS256, ms timestamps, `sign_type: SIGN` header)
    and use it as the Bearer token. UI: a toggle in Settings. (#8)
-7. **Per-chat system prompt picker** in the chat screen's app bar.
-   The `Chat.systemPromptId` field exists; just needs UI. (#4)
-8. **Search** in the chat list and the artifacts library. (#9)
-9. **Export chat** to Markdown / JSON. (#10)
-10. **Tool calls** rendering in the chat view (today tool_calls are
-    stored but not rendered). (#11)
+   — **DEFERRED.** Needs `dart_jsonwebtoken` dep + UI. Next session.
+7. ~~**Per-chat system prompt picker** in the chat screen's app bar.~~ ✅ (#4)
+8. ~~**Search** in the chat list and the artifacts library.~~ ✅ (#9)
+9. ~~**Export chat** to Markdown / JSON.~~ ✅ (#10)
+10. ~~**Tool calls** rendering in the chat view.~~ ✅ (#11)
 
 ### Low priority / nice-to-have
 

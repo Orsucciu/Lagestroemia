@@ -33,14 +33,46 @@ class AppConfig {
 
   // ---- z.ai API ---------------------------------------------------------
 
-  /// Default z.ai API base URL (OpenAI-compatible endpoint).
+  /// Default z.ai API base URL (OpenAI-compatible endpoint). Used in
+  /// API-key mode.
   ///
   /// Source: https://docs.z.ai/openapi.json — server root is
   /// `https://api.z.ai/api` and chat completions live under `/paas/v4`.
   static const String defaultApiBaseUrl = 'https://api.z.ai/api/paas/v4';
 
-  /// Path appended to [defaultApiBaseUrl] for chat completions.
+  /// chat.z.ai base URL — used in guest mode (the open-webui-style internal
+  /// API that the website itself uses).
+  ///
+  /// The website silently signs up a guest user via
+  /// `GET /v1/auths/` (returns a guest JWT) and then posts to
+  /// `POST /v2/chat/completions` with that JWT. The endpoint requires the
+  /// user to solve an Aliyun captcha per session before chat is allowed.
+  static const String chatZaiApiBaseUrl = 'https://chat.z.ai/api';
+
+  /// Front-end version sent in `X-FE-Version` header for chat.z.ai calls.
+  /// This is the version the website itself sends (matches the JS bundle
+  /// at https://z-cdn.chatglm.cn/z-ai/frontend/prod-fe-1.1.93/...).
+  static const String chatZaiFeVersion = 'prod-fe-1.1.93';
+
+  // ---- Chat completion paths (per mode) --------------------------------
+
+  /// Path appended to [defaultApiBaseUrl] for chat completions
+  /// (OpenAI-compatible, used in API-key mode).
   static const String chatCompletionsPath = '/chat/completions';
+
+  /// Path appended to [chatZaiApiBaseUrl] for chat completions
+  /// (open-webui-style, used in guest mode). The response is wrapped:
+  /// `data: {"type":"chat:completion","data":{...}}` and `[DONE]`.
+  static const String chatZaiChatCompletionsPath = '/v2/chat/completions';
+
+  /// Path appended to [chatZaiApiBaseUrl] for anonymous guest signup.
+  /// `GET /v1/auths/` returns a guest user with a JWT.
+  static const String chatZaiGuestAuthPath = '/v1/auths/';
+
+  /// Path appended to [chatZaiApiBaseUrl] for listing models.
+  static const String chatZaiModelsPath = '/models';
+
+  // ---- z.ai API key mode paths (api.z.ai) ------------------------------
 
   /// Path appended to [defaultApiBaseUrl] for file uploads.
   static const String filesPath = '/files';
@@ -76,17 +108,15 @@ class AppConfig {
 
   /// Model the chat screen picks when the user has not chosen one yet.
   ///
-  /// `glm-4.6` is a good general default — multi-modal, mature, reasonable
-  /// cost ($0.6 / $2.2 per 1M tokens at time of writing).
+  /// `glm-4.6` is a good general default for api.z.ai (paid) mode.
   static const String defaultModel = 'glm-4.6';
 
-  /// List of well-known model IDs that the user can pick from in the chat
-  /// composer's model dropdown.
-  ///
-  /// This list is intentionally curated — z.ai exposes many more variants
-  /// (e.g. `glm-4.5-air`, `glm-4.5-x`, `autoglm-phone-multilingual`) but the
-  /// composer only shows the most common ones; an "advanced" picker could
-  /// expose the full set later.
+  /// Default model for guest mode (chat.z.ai). The website exposes a
+  /// different model list — see [chatZaiKnownModels].
+  static const String defaultGuestModel = 'glm-4.7';
+
+  /// Models available on api.z.ai (API-key mode). Curated subset of the
+  /// documented OpenAPI list.
   static const List<String> knownModels = <String>[
     'glm-4.6',          // default general-purpose
     'glm-4.7',          // newer
@@ -100,6 +130,42 @@ class AppConfig {
     'glm-5.2',          // flagship (paid)
     'glm-5.1',          // flagship (paid)
   ];
+
+  /// Models available on chat.z.ai (guest mode), as returned by
+  /// `GET /api/models`. Sampled from a live response on 2026-09-09.
+  ///
+  /// Some IDs are non-obvious (`x-preview-l`, `0727-106B-API`) — these are
+  /// the actual strings the website sends in the chat completions body.
+  static const List<String> chatZaiKnownModels = <String>[
+    'glm-4.7',                      // GLM-4.7
+    'glm-4.6v',                      // GLM-4.6V (vision)
+    'glm-5.3',                       // GLM-5.3
+    'glm-5.2',                       // GLM-5.2
+    'GLM-5-Turbo',                   // GLM-5-Turbo
+    'GLM-5v-Turbo',                  // GLM-5V-Turbo (vision)
+    '0727-106B-API',                 // GLM-4.5-Air
+    '0727-360B-API',                 // GLM-4.5
+    'x-preview-l',                   // GLM-5.3-Flash (preview)
+    'deep-research',                 // Z1-Rumination
+    'zero',                          // Z1-32B
+  ];
+
+  // ---- Aliyun captcha (used in guest mode before the first chat) ------
+
+  /// Aliyun captcha SDK URL. Loaded lazily into the in-app webview that
+  /// renders the captcha widget.
+  static const String aliyunCaptchaSdkUrl =
+      'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js';
+
+  /// Aliyun captcha region (Singapore datacenter, matches what the website
+  /// sends).
+  static const String aliyunCaptchaRegion = 'sgp';
+
+  /// Aliyun captcha prefix.
+  static const String aliyunCaptchaPrefix = 'no8xfe';
+
+  /// Aliyun captcha scene id for chat.z.ai.
+  static const String aliyunCaptchaSceneIdChatZai = 'didk33e0';
 
   // ---- Storage keys ----------------------------------------------------
 

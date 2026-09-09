@@ -21,6 +21,7 @@ import '../features/chat/chat_list_screen.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/library/library_screen.dart';
 import '../features/library/artifacts_library_screen.dart';
+import '../features/library/files_library_screen.dart';
 import '../features/prompts/prompts_screen.dart';
 import '../features/prompts/prompt_editor_screen.dart';
 import '../features/settings/settings_screen.dart';
@@ -63,6 +64,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/library/artifacts',
             builder: (_, __) => const ArtifactsLibraryScreen(),
+          ),
+          GoRoute(
+            path: '/library/files',
+            builder: (_, __) => const FilesLibraryScreen(),
           ),
           GoRoute(
             path: '/prompts',

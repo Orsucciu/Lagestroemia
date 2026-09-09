@@ -9,11 +9,14 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/config/app_config.dart';
 import '../data/api/zai_api_client.dart';
 import '../data/models/models.dart';
+import '../state/auth_state.dart' show AuthMode;
 import 'providers.dart';
 
 const _uuid = Uuid();
@@ -99,6 +102,7 @@ class ChatComposerState {
     this.streamedText = '',
     this.streamedReasoning = '',
     this.streaming = false,
+    this.captchaRequired = false,
   });
 
   final String input;
@@ -109,6 +113,11 @@ class ChatComposerState {
   final String streamedReasoning;
   final bool streaming;
 
+  /// Set when the last chat completion request failed with the
+  /// `FRONTEND_CAPTCHA_REQUIRED` error. The UI should render the in-app
+  /// Aliyun captcha widget and re-send once the user solves it.
+  final bool captchaRequired;
+
   ChatComposerState copyWith({
     String? input,
     List<AttachedFile>? attachedFiles,
@@ -117,6 +126,7 @@ class ChatComposerState {
     String? streamedText,
     String? streamedReasoning,
     bool? streaming,
+    bool? captchaRequired,
   }) {
     return ChatComposerState(
       input: input ?? this.input,
@@ -126,6 +136,7 @@ class ChatComposerState {
       streamedText: streamedText ?? this.streamedText,
       streamedReasoning: streamedReasoning ?? this.streamedReasoning,
       streaming: streaming ?? this.streaming,
+      captchaRequired: captchaRequired ?? this.captchaRequired,
     );
   }
 }
@@ -151,6 +162,10 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
   ChatComposerNotifier(this._ref) : super(ChatComposerState());
   final Ref _ref;
 
+  /// CancelToken for the in-flight streaming request, if any. Used by
+  /// `cancel()` to abort the HTTP request (issue #6).
+  CancelToken? _cancelToken;
+
   void setInput(String value) {
     state = state.copyWith(input: value);
   }
@@ -159,13 +174,41 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     state = state.copyWith(attachedFiles: [...state.attachedFiles, file]);
   }
 
+  void removeAttachment(int index) {
+    final next = [...state.attachedFiles];
+    if (index >= 0 && index < next.length) {
+      next.removeAt(index);
+      state = state.copyWith(attachedFiles: next);
+    }
+  }
+
   void clearAttachments() {
     state = state.copyWith(attachedFiles: const <AttachedFile>[]);
   }
 
   void clearError() {
-    state = state.copyWith(error: null);
+    state = state.copyWith(error: null, captchaRequired: false);
   }
+
+  /// Sets the captcha verify param (after the user solves the in-app
+  /// Aliyun captcha) and immediately re-tries the last send.
+  Future<void> setCaptchaAndRetry(String captchaVerifyParam) async {
+    _ref.read(captchaVerifyParamProvider.notifier).state = captchaVerifyParam;
+    state = state.copyWith(captchaRequired: false, error: null);
+    // Re-send with the previously-stashed input. We saved the last input
+    // (and attachments) before showing the captcha prompt.
+    if (_stashedSend != null) {
+      final stash = _stashedSend!;
+      _stashedSend = null;
+      state = state.copyWith(
+        input: stash.input,
+        attachedFiles: stash.attachedFiles,
+      );
+      await send();
+    }
+  }
+
+  _StashedSend? _stashedSend;
 
   Future<void> send() async {
     if (state.streaming || state.isSending) return;
@@ -178,7 +221,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
       streamedText: '',
       streamedReasoning: '',
       streaming: true,
-      attachedFiles: const <AttachedFile>[],
+      captchaRequired: false,
     );
 
     final client = _ref.read(apiClientProvider);
@@ -194,6 +237,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     final chatRepo = await _ref.read(chatRepositoryProvider.future);
     final msgRepo = await _ref.read(messageRepositoryProvider.future);
     final settings = _ref.read(settingsStateProvider);
+    final auth = _ref.read(authStateProvider);
 
     // Resolve the chat to send into (creating one if the user picked "new chat").
     String chatId = _ref.read(currentChatIdProvider) ??
@@ -208,7 +252,10 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
       );
       return;
     }
-    final model = chat.model ?? settings.model;
+    final defaultModel = auth.mode == AuthMode.guest
+        ? AppConfig.defaultGuestModel
+        : settings.model;
+    final model = chat.model ?? defaultModel;
 
     // Build OpenAI-shaped messages payload.
     final priorMessages = await msgRepo.listForChat(chatId);
@@ -257,7 +304,9 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
       chatId: chatId,
       role: MessageRole.user,
       content: userText,
-      contentJson: state.attachedFiles.isEmpty ? null : jsonEncode(userMessagePayload['content']),
+      contentJson: state.attachedFiles.isEmpty
+          ? null
+          : jsonEncode(userMessagePayload['content']),
       createdAt: now,
     );
     await msgRepo.upsert(userMessage);
@@ -278,14 +327,51 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     await msgRepo.upsert(assistant);
 
     // Stream!
+    _cancelToken = CancelToken();
     final stream = client.chatCompletionStream(
       messages: wirePayload,
       model: model,
+      cancelToken: _cancelToken,
     );
     final buf = StringBuffer();
     final reasoningBuf = StringBuffer();
+    final toolCallsBuf = StringBuffer();
     String? finishReason;
+    bool cancelled = false;
     await for (final chunk in stream) {
+      if (chunk.error != null) {
+        // Detect the captcha-required error.
+        final code = chunk.error!.code;
+        final msg = chunk.error!.message;
+        final isCaptcha =
+            code == 'FRONTEND_CAPTCHA_REQUIRED' ||
+            msg.toLowerCase().contains('captcha');
+        if (isCaptcha) {
+          // Stash the send so we can retry after the user solves the captcha.
+          _stashedSend = _StashedSend(input: text, attachedFiles: state.attachedFiles);
+          state = state.copyWith(
+            streaming: false,
+            isSending: false,
+            captchaRequired: true,
+            error: chunk.error,
+          );
+          // Roll back the empty assistant placeholder so we don't show a
+          // blank bubble.
+          await msgRepo.delete(assistantId);
+          _ref.invalidate(currentChatMessagesProvider);
+          return;
+        }
+        state = state.copyWith(
+          streaming: false,
+          isSending: false,
+          error: chunk.error,
+        );
+        return;
+      }
+      if (chunk.finishReason == 'cancelled') {
+        cancelled = true;
+        break;
+      }
       if (chunk.contentDelta != null) buf.write(chunk.contentDelta);
       if (chunk.reasoningDelta != null) reasoningBuf.write(chunk.reasoningDelta);
       if (chunk.finishReason != null) finishReason = chunk.finishReason;
@@ -300,6 +386,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
         streamedReasoning: reasoningBuf.toString(),
       );
     }
+    _cancelToken = null;
     state = state.copyWith(
       isSending: false,
       streaming: false,
@@ -307,7 +394,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     _ref.invalidate(currentChatMessagesProvider);
     _ref.invalidate(chatListProvider);
 
-    if (finishReason == 'error') {
+    if (!cancelled && finishReason == 'error') {
       state = state.copyWith(error: const ApiError(
         message: 'Stream ended with an error. See logs.',
         kind: ApiErrorKind.unknown,
@@ -315,12 +402,24 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     }
   }
 
+  /// Cancels the in-flight HTTP request (issue #6). The Dio CancelToken
+  /// aborts the request server-side immediately, and the stream's
+  /// `await for` loop exits cleanly.
   Future<void> cancel() async {
-    // MVP: we don't pass a CancelToken into the streaming call yet.
-    // Setting `streaming=false` here is a soft cancel — the underlying
-    // stream keeps going until the next chunk lands.
+    final token = _cancelToken;
+    if (token != null && !token.isCancelled) {
+      token.cancel('user requested');
+    }
+    // The stream will yield a `cancelled` chunk and we'll exit the loop
+    // cleanly. Setting `streaming=false` here is a soft hint for the UI.
     state = state.copyWith(streaming: false, isSending: false);
   }
+}
+
+class _StashedSend {
+  _StashedSend({required this.input, required this.attachedFiles});
+  final String input;
+  final List<AttachedFile> attachedFiles;
 }
 
 String _dataUri(AttachedFile f) {
