@@ -34,7 +34,7 @@ jobs:
       - run: flutter precache --linux
       - run: flutter pub get
       - run: flutter gen-l10n
-      - run: flutter build linux --debug || true
+      - run: flutter create --platforms=linux --project-name lagestroemia --org com.lagestroemia .
       - run: flutter build linux --release
       - name: Tar
         run: cd build/linux/x64/release/bundle && tar -czf lagestroemia-linux-x64.tar.gz *
@@ -78,6 +78,7 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter gen-l10n
+      - run: flutter create --platforms=android --project-name lagestroemia --org com.lagestroemia .
       - run: flutter build apk --release --split-per-abi
       - uses: actions/upload-artifact@v4
         with:
@@ -99,7 +100,7 @@ jobs:
       - run: flutter precache --windows
       - run: flutter pub get
       - run: flutter gen-l10n
-      - run: flutter build windows --debug || true
+      - run: flutter create --platforms=windows --project-name lagestroemia --org com.lagestroemia .
       - run: flutter build windows --release
       - name: Zip
         shell: pwsh
