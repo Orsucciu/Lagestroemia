@@ -8,6 +8,7 @@ class Chat {
     required this.title,
     this.model,
     this.systemPromptId,
+    this.profileId,
     required this.createdAt,
     required this.updatedAt,
     this.archived = false,
@@ -28,6 +29,12 @@ class Chat {
   /// System prompt applied to every message in this chat.
   final String? systemPromptId;
 
+  /// Anonymous profile id this chat belongs to. Null = main account
+  /// (either API-key mode or the default guest session). Non-null =
+  /// this chat belongs to an anonymous tab and uses that tab's
+  /// guest JWT.
+  final String? profileId;
+
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -40,6 +47,7 @@ class Chat {
     String? title,
     Object? model = _sentinel,
     Object? systemPromptId = _sentinel,
+    Object? profileId = _sentinel,
     DateTime? createdAt,
     DateTime? updatedAt,
     bool? archived,
@@ -51,6 +59,9 @@ class Chat {
       systemPromptId: identical(systemPromptId, _sentinel)
           ? this.systemPromptId
           : systemPromptId as String?,
+      profileId: identical(profileId, _sentinel)
+          ? this.profileId
+          : profileId as String?,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       archived: archived ?? this.archived,
@@ -63,6 +74,7 @@ class Chat {
       title: row['title']! as String,
       model: row['model'] as String?,
       systemPromptId: row['system_prompt_id'] as String?,
+      profileId: row['profile_id'] as String?,
       createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at']! as int),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(row['updated_at']! as int),
       archived: (row['archived'] as int?) == 1,
@@ -74,6 +86,7 @@ class Chat {
         'title': title,
         'model': model,
         'system_prompt_id': systemPromptId,
+        'profile_id': profileId,
         'created_at': createdAt.millisecondsSinceEpoch,
         'updated_at': updatedAt.millisecondsSinceEpoch,
         'archived': archived ? 1 : 0,
@@ -87,6 +100,7 @@ class Chat {
           other.title == title &&
           other.model == model &&
           other.systemPromptId == systemPromptId &&
+          other.profileId == profileId &&
           other.createdAt == createdAt &&
           other.updatedAt == updatedAt &&
           other.archived == archived);
@@ -97,6 +111,7 @@ class Chat {
         title,
         model,
         systemPromptId,
+        profileId,
         createdAt,
         updatedAt,
         archived,

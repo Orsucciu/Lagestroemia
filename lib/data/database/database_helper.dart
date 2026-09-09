@@ -37,6 +37,7 @@ CREATE TABLE chats (
   title         TEXT NOT NULL,
   model         TEXT,
   system_prompt_id TEXT,
+  profile_id    TEXT,                     -- anon profile id (null = main account)
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   archived      INTEGER NOT NULL DEFAULT 0
@@ -107,7 +108,13 @@ CREATE TABLE kv (
 ''';
 
 /// Latest schema version. Bump this whenever `_schemaVN` is extended.
-const int _latestVersion = 1;
+const int _latestVersion = 2;
+
+/// Migration from v1 to v2: add `profile_id` column to the chats
+/// table (for anonymous tab isolation).
+const String _migrateV1toV2 = '''
+ALTER TABLE chats ADD COLUMN profile_id TEXT;
+''';
 
 /// Thrown by [DatabaseHelper] for unrecoverable failures.
 class DatabaseException implements Exception {
@@ -188,9 +195,16 @@ class DatabaseHelper {
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           _log.info('Upgrading database v$oldVersion → v$newVersion');
-          // Future migrations go here. For v1 there is nothing to migrate.
-          // Each step upgrades from N to N+1.
-          // for (var v = oldVersion + 1; v <= newVersion; v++) { _migrateTo(db, v); }
+          // Run each migration step from oldVersion+1 to newVersion.
+          for (var v = oldVersion + 1; v <= newVersion; v++) {
+            if (v == 2) {
+              _log.info('Migrating to v2: add profile_id column to chats');
+              for (final stmt in _splitStatements(_migrateV1toV2)) {
+                await db.execute(stmt);
+              }
+            }
+            // Future migrations go here.
+          }
         },
       ),
     );

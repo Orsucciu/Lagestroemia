@@ -18,6 +18,7 @@ import '../core/storage/secure_storage_service.dart';
 import '../data/api/zai_api_client.dart';
 import '../data/database/database_helper.dart';
 import '../data/repositories/repositories.dart';
+import 'anon_profiles_state.dart';
 import 'auth_state.dart';
 import 'settings_state.dart';
 
@@ -102,12 +103,20 @@ final kvRepositoryProvider = FutureProvider<KvRepository>((ref) async {
 /// widget when the user solves the Aliyun captcha in guest mode).
 final captchaVerifyParamProvider = StateProvider<String?>((ref) => null);
 
-/// Resolves to a [ZaiApiClient] using the current auth mode and
-/// captcha param. Returns `null` if the user is not signed in at all.
+/// Resolves to a [ZaiApiClient] using the current auth mode, captcha
+/// param, and (in guest mode) the active anonymous profile's guest
+/// token. Returns `null` if the user is not signed in at all.
+///
+/// In guest mode, if an anonymous profile is active, its guest JWT
+/// takes precedence over the main auth state's guest token. This is
+/// what enables "anonymous tabs" — each tab switches the active
+/// profile, which switches the bearer token, which isolates the
+/// chat session.
 final apiClientProvider = Provider<ZaiApiClient?>((ref) {
   final auth = ref.watch(authStateProvider);
   final settings = ref.watch(settingsStateProvider);
   final captchaParam = ref.watch(captchaVerifyParamProvider);
+  final anonProfiles = ref.watch(anonProfilesProvider);
   if (!auth.signedIn) return null;
   final dio = ref.watch(dioProvider);
   final backend = auth.mode == AuthMode.guest
@@ -116,8 +125,17 @@ final apiClientProvider = Provider<ZaiApiClient?>((ref) {
   // For API-key mode, the user may have overridden the base URL via
   // Settings; for guest mode, always use chat.z.ai.
   final baseUrl = auth.mode == AuthMode.guest ? null : settings.apiBaseUrl;
+  // In guest mode, prefer the active anonymous profile's guest token
+  // (so the chat completions are isolated to that profile).
+  String bearerToken;
+  if (auth.mode == AuthMode.guest) {
+    final activeProfile = anonProfiles.active;
+    bearerToken = activeProfile?.guestToken ?? auth.bearerToken!;
+  } else {
+    bearerToken = auth.bearerToken!;
+  }
   return ZaiApiClient(
-    bearerToken: auth.bearerToken!,
+    bearerToken: bearerToken,
     apiBaseUrl: baseUrl,
     backend: backend,
     dio: dio,

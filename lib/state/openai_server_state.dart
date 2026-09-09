@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/config/app_config.dart';
 import '../data/api/openai_api_server.dart';
+import 'anon_profiles_state.dart';
 import 'auth_state.dart';
 import 'providers.dart';
 
@@ -26,7 +27,18 @@ class OpenAiServerNotifier extends StateNotifier<OpenAiServerStatus> {
   OpenAiServerNotifier(this._ref, this._prefs)
       : super(const OpenAiServerStatus()) {
     _server = OpenAiApiServer(
-      bearerTokenProvider: () => _ref.read(authStateProvider).bearerToken,
+      bearerTokenProvider: () {
+        final auth = _ref.read(authStateProvider);
+        if (!auth.signedIn) return null;
+        // In guest mode, prefer the active anonymous profile's guest
+        // token (so the OpenAI-compat server also benefits from
+        // profile isolation).
+        if (auth.mode == AuthMode.guest) {
+          final activeProfile = _ref.read(anonProfilesProvider).active;
+          if (activeProfile != null) return activeProfile.guestToken;
+        }
+        return auth.bearerToken;
+      },
     );
   }
 

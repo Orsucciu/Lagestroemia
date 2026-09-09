@@ -181,6 +181,42 @@ class ChatScreen extends ConsumerWidget {
                     ref.read(chatComposerProvider.notifier).clearError(),
               ),
             ),
+          // Auto-retry status indicator
+          if (composer.isAutoRetrying)
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.tertiaryContainer,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: <Widget>[
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Server overloaded. Auto-retrying in '
+                        '${composer.autoRetryNextDelaySecs}s '
+                        '(attempt ${composer.autoRetryAttempt}/'
+                        '${composer.autoRetryMaxAttempts})…',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () =>
+                          ref.read(chatComposerProvider.notifier).cancel(),
+                      child: const Text('Cancel'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           // Captcha-required prompt
           if (composer.captchaRequired)
             Padding(

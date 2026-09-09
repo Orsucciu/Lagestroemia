@@ -3,12 +3,18 @@
 //
 // Search filters by title (case-insensitive substring match).
 
+import 'dart:convert' show utf8;
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../l10n/generated/app_localizations.dart';
+import '../../state/anon_profiles_state.dart';
+import '../../state/auth_state.dart' show AuthMode;
 import '../../state/chat_state.dart';
+import '../../state/providers.dart';
 import '../../data/models/models.dart';
 
 /// Search query for the chat list. Empty means "show all".
@@ -27,6 +33,33 @@ class ChatListScreen extends ConsumerWidget {
       appBar: AppBar(
         title: Text(l.navChats),
         actions: <Widget>[
+          // Continue from JSON (anonymous continue feature)
+          IconButton(
+            icon: const Icon(Icons.file_upload_outlined),
+            tooltip: 'Continue from JSON',
+            onPressed: () async {
+              final result = await FilePicker.platform.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: ['json'],
+                withData: true,
+              );
+              if (result == null || result.files.isEmpty) return;
+              final bytes = result.files.first.bytes;
+              if (bytes == null) return;
+              final jsonString = utf8.decode(bytes);
+              final chatId = await ref
+                  .read(chatComposerProvider.notifier)
+                  .continueFromJson(jsonString);
+              if (chatId != null && context.mounted) {
+                context.go('/chat/$chatId');
+              } else {
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Failed to import conversation.')),
+                );
+              }
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: l.chatNew,
@@ -42,6 +75,8 @@ class ChatListScreen extends ConsumerWidget {
       ),
       body: Column(
         children: <Widget>[
+          // Anonymous tab switcher (only shown in guest mode).
+          _AnonTabBar(),
           Padding(
             padding: const EdgeInsets.all(12),
             child: TextField(
@@ -165,5 +200,67 @@ class _ChatTile extends ConsumerWidget {
       ),
     );
     return r ?? false;
+  }
+}
+
+/// Anonymous tab switcher bar. Shows horizontal scrollable row of tabs.
+class _AnonTabBar extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final anonProfiles = ref.watch(anonProfilesProvider);
+    final auth = ref.watch(authStateProvider);
+
+    // Only show in guest mode with at least 1 profile.
+    if (auth.mode != AuthMode.guest || anonProfiles.profiles.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: <Widget>[
+                  for (final p in anonProfiles.profiles)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: FilterChip(
+                        label: Text(p.label),
+                        selected: p.id == anonProfiles.activeId,
+                        onSelected: (_) async {
+                          await ref
+                              .read(anonProfilesProvider.notifier)
+                              .setActive(p.id);
+                          ref.invalidate(chatListProvider);
+                        },
+                        onDeleted: p.id == anonProfiles.activeId &&
+                                anonProfiles.profiles.length > 1
+                            ? () async {
+                                await ref
+                                    .read(anonProfilesProvider.notifier)
+                                    .delete(p.id);
+                                ref.invalidate(chatListProvider);
+                              }
+                            : null,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add_circle_outline, size: 20),
+            tooltip: 'New anonymous tab',
+            onPressed: () async {
+              await ref.read(anonProfilesProvider.notifier).createNew();
+              ref.invalidate(chatListProvider);
+            },
+          ),
+        ],
+      ),
+    );
   }
 }

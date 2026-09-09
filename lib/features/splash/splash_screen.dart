@@ -12,6 +12,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../state/auth_state.dart';
 import '../../state/openai_server_state.dart';
+import '../../state/anon_profiles_state.dart';
 import '../../core/config/app_config.dart';
 
 class SplashScreen extends ConsumerStatefulWidget {
@@ -26,6 +27,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await ref.read(authStateProvider.notifier).restore();
+      // Restore anonymous profiles from SharedPreferences.
+      await ref.read(anonProfilesProvider.notifier).restore();
       // Restore the OpenAI server if it was running before the last quit.
       // (Native targets only — on Web this is a no-op.)
       await ref.read(openAiServerProvider.notifier).restoreIfEnabled();

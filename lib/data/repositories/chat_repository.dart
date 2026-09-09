@@ -14,10 +14,28 @@ class ChatRepository {
   static final Logger _log = Logger('lagestroemia.repo.chat');
 
   /// Returns all non-archived chats, newest first.
-  Future<List<Chat>> list({bool includeArchived = false}) async {
+  /// If [profileId] is non-null, filters chats by that profile id.
+  /// If [profileId] is null, returns chats with a NULL profile_id
+  /// (the main account's chats).
+  Future<List<Chat>> list({
+    bool includeArchived = false,
+    String? profileId,
+  }) async {
+    final where = <String>[];
+    final args = <Object?>[];
+    if (!includeArchived) {
+      where.add('archived = 0');
+    }
+    if (profileId == null) {
+      where.add('profile_id IS NULL');
+    } else {
+      where.add('profile_id = ?');
+      args.add(profileId);
+    }
     final rows = await _db.query(
       'chats',
-      where: includeArchived ? null : 'archived = 0',
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
       orderBy: 'updated_at DESC',
     );
     return rows.map(Chat.fromMap).toList(growable: false);
@@ -61,13 +79,19 @@ class ChatRepository {
   }
 
   /// Convenience: creates a new chat with sensible defaults.
-  Future<Chat> create({String? title, String? model, String? systemPromptId}) async {
+  Future<Chat> create({
+    String? title,
+    String? model,
+    String? systemPromptId,
+    String? profileId,
+  }) async {
     final now = DateTime.now().toUtc();
     final chat = Chat(
       id: _uuid(),
       title: title ?? 'New chat',
       model: model,
       systemPromptId: systemPromptId,
+      profileId: profileId,
       createdAt: now,
       updatedAt: now,
       archived: false,

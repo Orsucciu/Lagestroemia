@@ -16,6 +16,7 @@ import 'package:uuid/uuid.dart';
 import '../core/config/app_config.dart';
 import '../data/api/zai_api_client.dart';
 import '../data/models/models.dart';
+import '../state/anon_profiles_state.dart';
 import '../state/auth_state.dart' show AuthMode;
 import 'providers.dart';
 
@@ -30,12 +31,21 @@ class ChatListNotifier extends AsyncNotifier<List<Chat>> {
   @override
   Future<List<Chat>> build() async {
     final repo = await ref.watch(chatRepositoryProvider.future);
-    return repo.list();
+    final anonProfiles = ref.watch(anonProfilesProvider);
+    // Filter chats by the active anonymous profile (if any).
+    final profileId = anonProfiles.active?.id;
+    return repo.list(profileId: profileId);
   }
 
   Future<Chat> createNewChat({String? model, String? systemPromptId}) async {
     final repo = await ref.watch(chatRepositoryProvider.future);
-    final chat = await repo.create(model: model, systemPromptId: systemPromptId);
+    final anonProfiles = ref.read(anonProfilesProvider);
+    final profileId = anonProfiles.active?.id;
+    final chat = await repo.create(
+      model: model,
+      systemPromptId: systemPromptId,
+      profileId: profileId,
+    );
     state = AsyncData([chat, ...?state.valueOrNull]);
     return chat;
   }
@@ -103,6 +113,9 @@ class ChatComposerState {
     this.streamedReasoning = '',
     this.streaming = false,
     this.captchaRequired = false,
+    this.autoRetryAttempt = 0,
+    this.autoRetryMaxAttempts = 5,
+    this.autoRetryNextDelaySecs = 0,
   });
 
   final String input;
@@ -118,6 +131,20 @@ class ChatComposerState {
   /// Aliyun captcha widget and re-send once the user solves it.
   final bool captchaRequired;
 
+  /// Auto-retry: current attempt number (0 = first try, 1 = first retry,
+  /// ..., autoRetryMaxAttempts = last retry). The UI shows
+  /// "Auto-retrying in Xs (attempt N/M)..." when autoRetryAttempt > 0.
+  final int autoRetryAttempt;
+
+  /// Auto-retry: maximum number of retries before giving up.
+  /// Default: 5 (so total of 6 attempts including the initial one).
+  final int autoRetryMaxAttempts;
+
+  /// Auto-retry: seconds until the next retry. 0 = not retrying.
+  final int autoRetryNextDelaySecs;
+
+  bool get isAutoRetrying => autoRetryAttempt > 0 && autoRetryNextDelaySecs > 0;
+
   ChatComposerState copyWith({
     String? input,
     List<AttachedFile>? attachedFiles,
@@ -127,6 +154,9 @@ class ChatComposerState {
     String? streamedReasoning,
     bool? streaming,
     bool? captchaRequired,
+    int? autoRetryAttempt,
+    int? autoRetryMaxAttempts,
+    int? autoRetryNextDelaySecs,
   }) {
     return ChatComposerState(
       input: input ?? this.input,
@@ -137,6 +167,11 @@ class ChatComposerState {
       streamedReasoning: streamedReasoning ?? this.streamedReasoning,
       streaming: streaming ?? this.streaming,
       captchaRequired: captchaRequired ?? this.captchaRequired,
+      autoRetryAttempt: autoRetryAttempt ?? this.autoRetryAttempt,
+      autoRetryMaxAttempts:
+          autoRetryMaxAttempts ?? this.autoRetryMaxAttempts,
+      autoRetryNextDelaySecs:
+          autoRetryNextDelaySecs ?? this.autoRetryNextDelaySecs,
     );
   }
 }
@@ -326,75 +361,137 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     );
     await msgRepo.upsert(assistant);
 
-    // Stream!
-    _cancelToken = CancelToken();
-    final stream = client.chatCompletionStream(
-      messages: wirePayload,
-      model: model,
-      cancelToken: _cancelToken,
-    );
-    final buf = StringBuffer();
-    final reasoningBuf = StringBuffer();
-    final toolCallsBuf = StringBuffer();
-    String? finishReason;
+    // Stream with auto-retry!
+    int retryAttempt = 0;
+    const maxRetries = 5;
+    bool success = false;
     bool cancelled = false;
-    await for (final chunk in stream) {
-      if (chunk.error != null) {
-        // Detect the captcha-required error.
-        final code = chunk.error!.code;
-        final msg = chunk.error!.message;
-        final isCaptcha =
-            code == 'FRONTEND_CAPTCHA_REQUIRED' ||
-            msg.toLowerCase().contains('captcha');
-        if (isCaptcha) {
-          // Stash the send so we can retry after the user solves the captcha.
-          _stashedSend = _StashedSend(input: text, attachedFiles: state.attachedFiles);
+    String? finishReason;
+
+    while (retryAttempt <= maxRetries && !cancelled) {
+      _cancelToken = CancelToken();
+      final stream = client.chatCompletionStream(
+        messages: wirePayload,
+        model: model,
+        cancelToken: _cancelToken,
+      );
+      final buf = StringBuffer();
+      final reasoningBuf = StringBuffer();
+      finishReason = null;
+      cancelled = false;
+      bool shouldRetry = false;
+      ApiError? retryError;
+
+      await for (final chunk in stream) {
+        if (chunk.error != null) {
+          final code = chunk.error!.code;
+          final msg = chunk.error!.message;
+          final isCaptcha =
+              code == 'FRONTEND_CAPTCHA_REQUIRED' ||
+              msg.toLowerCase().contains('captcha');
+          if (isCaptcha) {
+            _stashedSend = _StashedSend(
+              input: text,
+              attachedFiles: state.attachedFiles);
+            state = state.copyWith(
+              streaming: false,
+              isSending: false,
+              captchaRequired: true,
+              error: chunk.error,
+              autoRetryAttempt: 0,
+              autoRetryNextDelaySecs: 0,
+            );
+            await msgRepo.delete(assistantId);
+            _ref.invalidate(currentChatMessagesProvider);
+            return;
+          }
+          // Check if the error is retryable (server overload, quota,
+          // rate limit, network).
+          final kind = chunk.error!.kind;
+          if (retryAttempt < maxRetries &&
+              (kind == ApiErrorKind.server ||
+               kind == ApiErrorKind.rateLimit ||
+               kind == ApiErrorKind.quota ||
+               kind == ApiErrorKind.network)) {
+            shouldRetry = true;
+            retryError = chunk.error;
+            break;
+          }
+          // Non-retryable error — show it.
           state = state.copyWith(
             streaming: false,
             isSending: false,
-            captchaRequired: true,
             error: chunk.error,
+            autoRetryAttempt: 0,
+            autoRetryNextDelaySecs: 0,
           );
-          // Roll back the empty assistant placeholder so we don't show a
-          // blank bubble.
-          await msgRepo.delete(assistantId);
-          _ref.invalidate(currentChatMessagesProvider);
           return;
         }
-        state = state.copyWith(
-          streaming: false,
-          isSending: false,
-          error: chunk.error,
+        if (chunk.finishReason == 'cancelled') {
+          cancelled = true;
+          break;
+        }
+        if (chunk.contentDelta != null) buf.write(chunk.contentDelta);
+        if (chunk.reasoningDelta != null) reasoningBuf.write(chunk.reasoningDelta);
+        if (chunk.finishReason != null) finishReason = chunk.finishReason;
+        await msgRepo.updateContent(
+          assistantId,
+          content: buf.toString(),
+          reasoning: reasoningBuf.toString(),
         );
-        return;
+        state = state.copyWith(
+          streamedText: buf.toString(),
+          streamedReasoning: reasoningBuf.toString(),
+        );
       }
-      if (chunk.finishReason == 'cancelled') {
-        cancelled = true;
-        break;
+      _cancelToken = null;
+
+      if (cancelled) break;
+      if (shouldRetry) {
+        retryAttempt++;
+        // Exponential backoff: 2^attempt seconds (1, 2, 4, 8, 16...)
+        final delaySecs = 1 << (retryAttempt - 1); // 1, 2, 4, 8, 16
+        state = state.copyWith(
+          autoRetryAttempt: retryAttempt,
+          autoRetryNextDelaySecs: delaySecs,
+          autoRetryMaxAttempts: maxRetries,
+          error: retryError,
+        );
+        // Countdown the delay.
+        for (var remaining = delaySecs; remaining > 0; remaining--) {
+          await Future<void>.delayed(const Duration(seconds: 1));
+          if (state.autoRetryNextDelaySecs == 0) break; // user cancelled
+          state = state.copyWith(autoRetryNextDelaySecs: remaining - 1);
+        }
+        if (state.autoRetryNextDelaySecs == 0 && !state.isSending) {
+          // User cancelled during the delay.
+          break;
+        }
+        // Clear the partial content for a fresh retry.
+        await msgRepo.updateContent(assistantId, content: '', reasoning: '');
+        state = state.copyWith(
+          streamedText: '',
+          streamedReasoning: '',
+          autoRetryNextDelaySecs: 0,
+        );
+        continue;
       }
-      if (chunk.contentDelta != null) buf.write(chunk.contentDelta);
-      if (chunk.reasoningDelta != null) reasoningBuf.write(chunk.reasoningDelta);
-      if (chunk.finishReason != null) finishReason = chunk.finishReason;
-      // Persist every chunk so a crashed app can resume.
-      await msgRepo.updateContent(
-        assistantId,
-        content: buf.toString(),
-        reasoning: reasoningBuf.toString(),
-      );
-      state = state.copyWith(
-        streamedText: buf.toString(),
-        streamedReasoning: reasoningBuf.toString(),
-      );
+      // Stream completed (either successfully or with a non-retryable
+      // finish_reason=error).
+      success = true;
+      break;
     }
-    _cancelToken = null;
+
     state = state.copyWith(
       isSending: false,
       streaming: false,
+      autoRetryAttempt: 0,
+      autoRetryNextDelaySecs: 0,
     );
     _ref.invalidate(currentChatMessagesProvider);
     _ref.invalidate(chatListProvider);
 
-    if (!cancelled && finishReason == 'error') {
+    if (!cancelled && !success && finishReason == 'error') {
       state = state.copyWith(error: const ApiError(
         message: 'Stream ended with an error. See logs.',
         kind: ApiErrorKind.unknown,
@@ -402,17 +499,96 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     }
   }
 
-  /// Cancels the in-flight HTTP request (issue #6). The Dio CancelToken
-  /// aborts the request server-side immediately, and the stream's
-  /// `await for` loop exits cleanly.
+  /// Imports a conversation from a JSON array (as produced by the
+  /// "Export chat → JSON" feature) into a fresh chat under the active
+  /// anonymous profile. Creates the chat and all messages, then opens
+  /// it in the chat view.
+  ///
+  /// The JSON format is:
+  ///   [{"role":"user","content":"...","reasoning":"...","created_at":"..."},
+  ///    {"role":"assistant","content":"...","reasoning":"...","created_at":"..."},
+  ///    ...]
+  ///
+  /// Returns the new chat's id on success, null on failure.
+  Future<String?> continueFromJson(String jsonString) async {
+    try {
+      final list = jsonDecode(jsonString) as List<Object?>;
+      if (list.isEmpty) return null;
+
+      final chatRepo = await _ref.read(chatRepositoryProvider.future);
+      final msgRepo = await _ref.read(messageRepositoryProvider.future);
+      final anonProfiles = _ref.read(anonProfilesProvider);
+      final settings = _ref.read(settingsStateProvider);
+
+      // Create a new chat for this conversation.
+      final profileId = anonProfiles.active?.id;
+      final firstUserMsg = list.firstWhere(
+        (e) => (e as Map<String, Object?>)['role'] == 'user',
+        orElse: () => list.first as Map<String, Object?>,
+      );
+      final title = ((firstUserMsg as Map<String, Object?>)['content']
+                  as String?)
+              ?.split('\n')
+              .first
+              .substring(0, 60) ??
+          'Continued chat';
+      final chat = await chatRepo.create(
+        title: title,
+        model: settings.model,
+        profileId: profileId,
+      );
+
+      // Insert all messages.
+      for (final entry in list) {
+        final m = entry as Map<String, Object?>;
+        final role = m['role'] as String? ?? 'user';
+        final content = m['content'] as String? ?? '';
+        final reasoning = m['reasoning'] as String?;
+        final createdAtStr = m['created_at'] as String?;
+        final createdAt = createdAtStr != null
+            ? DateTime.tryParse(createdAtStr) ?? DateTime.now().toUtc()
+            : DateTime.now().toUtc();
+
+        await msgRepo.upsert(ChatMessage(
+          id: _uuid.v4(),
+          chatId: chat.id,
+          role: MessageRole.fromWire(role),
+          content: content,
+          reasoning: reasoning,
+          createdAt: createdAt,
+        ));
+      }
+      await chatRepo.touch(chat.id);
+
+      // Refresh the chat list and open the chat.
+      _ref.invalidate(chatListProvider);
+      _ref.read(currentChatIdProvider.notifier).state = chat.id;
+      return chat.id;
+    } catch (e) {
+      state = state.copyWith(error: ApiError(
+        message: 'Failed to import conversation: $e',
+        kind: ApiErrorKind.unknown,
+      ));
+      return null;
+    }
+  }
+
+  /// Cancels the in-flight HTTP request (issue #6) and stops any
+  /// pending auto-retry. The Dio CancelToken aborts the request
+  /// server-side immediately, and the stream's `await for` loop
+  /// exits cleanly.
   Future<void> cancel() async {
     final token = _cancelToken;
     if (token != null && !token.isCancelled) {
       token.cancel('user requested');
     }
-    // The stream will yield a `cancelled` chunk and we'll exit the loop
-    // cleanly. Setting `streaming=false` here is a soft hint for the UI.
-    state = state.copyWith(streaming: false, isSending: false);
+    // Also clear the auto-retry countdown.
+    state = state.copyWith(
+      streaming: false,
+      isSending: false,
+      autoRetryAttempt: 0,
+      autoRetryNextDelaySecs: 0,
+    );
   }
 }
 
