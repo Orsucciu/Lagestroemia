@@ -34,6 +34,7 @@ jobs:
       - run: flutter precache --linux
       - run: flutter pub get
       - run: flutter gen-l10n
+      - run: flutter build linux --debug || true
       - run: flutter build linux --release
       - name: Tar
         run: cd build/linux/x64/release/bundle && tar -czf lagestroemia-linux-x64.tar.gz *
@@ -98,6 +99,7 @@ jobs:
       - run: flutter precache --windows
       - run: flutter pub get
       - run: flutter gen-l10n
+      - run: flutter build windows --debug || true
       - run: flutter build windows --release
       - name: Zip
         shell: pwsh
