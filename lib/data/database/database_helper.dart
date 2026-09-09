@@ -20,6 +20,7 @@
 
 import 'dart:convert' show jsonEncode, jsonDecode;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -129,6 +130,10 @@ class DatabaseException implements Exception {
 /// call, so the rest of the app does not need to care about the platform.
 class DatabaseHelper {
   DatabaseHelper._();
+  /// Test-only constructor that allows subclasses to override [database]
+  /// with a custom in-memory database. Used by `auth_state_test.dart`.
+  @visibleForTesting
+  DatabaseHelper.forTest();
   static final DatabaseHelper instance = DatabaseHelper._();
 
   static final Logger _log = Logger('lagestroemia.database');

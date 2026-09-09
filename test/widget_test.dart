@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:lagestroemia/main.dart';
+import 'package:lagestroemia/state/providers.dart';
 import 'package:lagestroemia/state/settings_state.dart';
 
 void main() {
@@ -18,6 +19,7 @@ void main() {
           settingsStateProvider.overrideWith(
             (ref) => SettingsNotifier(prefs),
           ),
+          sharedPrefsProvider.overrideWithValue(prefs),
         ],
         child: const LagestroemiaApp(),
       ),

@@ -1,16 +1,16 @@
 // Wraps `flutter_secure_storage` so the rest of the app does not have to
-// know about platform-specific keychain quirks. We expose two helpers:
-//  - `getApiKey()` / `setApiKey()` for the z.ai Bearer token,
-//  - `getJwtSecret()` / `setJwtSecret()` for the optional JWT signing
-//    secret that some z.ai API keys (in form `<id>.<secret>`) come with.
+// know about platform-specific keychain quirks.
+//
+// Supports multi-account storage: each account has its own API key slot
+// in the OS keychain, namespaced by the account id. The "default"
+// account uses the legacy keys for backwards compatibility.
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:logging/logging.dart';
 
 import '../config/app_config.dart';
 
-/// Thrown if secure storage is not available on the current platform (e.g.
-/// the Web target without secure context, or an unrooted Android).
+/// Thrown if secure storage is not available on the current platform.
 class SecureStorageException implements Exception {
   const SecureStorageException(this.message);
   final String message;
@@ -19,13 +19,6 @@ class SecureStorageException implements Exception {
 }
 
 /// Encapsulates access to the OS keychain / browser storage.
-///
-/// On Linux this uses `libsecret` (via `secret_storage`) which the user
-/// must have set up (typically the GNOME keyring is running). On Windows
-/// this uses the Credential Manager. On Android this uses the Android
-/// Keystore. On Web this falls back to browser-local `sessionStorage`
-/// (encrypted with a per-session key) — the MVP does not promise at-rest
-/// security on the Web target.
 class SecureStorageService {
   SecureStorageService([FlutterSecureStorage? storage])
       : _storage = storage ??
@@ -40,19 +33,44 @@ class SecureStorageService {
   final FlutterSecureStorage _storage;
   static final Logger _log = Logger('lagestroemia.storage.secure');
 
+  // ---- Legacy single-account helpers (kept for backwards compat) ------
+
   Future<String?> getApiKey() async => _read(AppConfig.secureKeyApiKey);
   Future<void> setApiKey(String value) async =>
       _write(AppConfig.secureKeyApiKey, value);
   Future<void> deleteApiKey() async => _delete(AppConfig.secureKeyApiKey);
 
-  Future<String?> getJwtSecret() async => _read(AppConfig.secureKeyJwtSecret);
-  Future<void> setJwtSecret(String? value) async {
-    if (value == null) {
-      await _delete(AppConfig.secureKeyJwtSecret);
+  // ---- Per-account helpers (multi-account support, issue #12) --------
+
+  /// Returns the API key for the given account id, or null if not stored.
+  ///
+  /// For the 'default' account this reads the legacy key so existing
+  /// installs keep working. For other ids this reads
+  /// `lagestroemia.api_key.<id>`.
+  Future<String?> getApiKeyForAccount(String accountId) async {
+    if (accountId == 'default') return _read(AppConfig.secureKeyApiKey);
+    return _read('${AppConfig.secureKeyApiKey}.$accountId');
+  }
+
+  /// Writes the API key for the given account id.
+  Future<void> setApiKeyForAccount(String accountId, String value) async {
+    if (accountId == 'default') {
+      await _write(AppConfig.secureKeyApiKey, value);
       return;
     }
-    await _write(AppConfig.secureKeyJwtSecret, value);
+    await _write('${AppConfig.secureKeyApiKey}.$accountId', value);
   }
+
+  /// Deletes the API key for the given account id.
+  Future<void> deleteApiKeyForAccount(String accountId) async {
+    if (accountId == 'default') {
+      await _delete(AppConfig.secureKeyApiKey);
+      return;
+    }
+    await _delete('${AppConfig.secureKeyApiKey}.$accountId');
+  }
+
+  // ---- low-level primitives -------------------------------------------
 
   Future<String?> _read(String key) async {
     try {

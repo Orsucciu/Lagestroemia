@@ -15,21 +15,25 @@
 //    `POST https://api.z.ai/api/paas/v4/chat/completions` with that Bearer
 //    token; no captcha required.
 //
-// The two endpoints are different shapes:
-//  - api.z.ai is the documented OpenAI-compatible public API,
-//  - chat.z.ai is the open-webui-style internal API used by the website
-//    (different SSE format: `data: {"type": "chat:completion", "data": ...}`).
-//
-// [AuthState.mode] tells the rest of the app which path to use.
+// API-key mode supports:
+//   - **JWT auth mode** (issue #8): for keys in form `<id>.<secret>`, sign
+//     a short-lived JWT (HS256, ms timestamps, sign_type: SIGN header)
+//     and use it as the Bearer token, instead of the raw key.
+//   - **Multi-account** (issue #12): the user can add / switch / delete
+//     accounts, each with its own API key stored per-account in the OS
+//     keychain.
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/auth/zai_jwt.dart';
 import '../core/config/app_config.dart';
 import '../core/result/result.dart';
 import '../core/storage/secure_storage_service.dart';
 import '../data/api/zai_api_client.dart';
 import '../data/models/models.dart';
+import '../data/repositories/repositories.dart';
 import 'providers.dart';
 
 /// Which auth path is active.
@@ -37,11 +41,9 @@ enum AuthMode {
   /// No auth (initial state, before the splash screen has finished
   /// restoring any saved state).
   none,
-
   /// Anonymous guest using chat.z.ai/api/v2 with an Aliyun captcha per
   /// session.
   guest,
-
   /// Real z.ai API key using api.z.ai/api/paas/v4.
   apiKey,
 }
@@ -50,36 +52,73 @@ enum AuthMode {
 class AuthState {
   const AuthState({
     this.mode = AuthMode.none,
+    this.accountId = 'default',
     this.apiKey,
-    this.jwtSecret,
     this.guestToken,
     this.guestUserId,
+    this.useJwtAuth = false,
+    this.jwtValidity = const Duration(hours: 1),
     this.status = AuthStatus.signedOut,
     this.lastError,
   });
 
   final AuthMode mode;
 
-  /// z.ai API key. Only set in [AuthMode.apiKey].
+  /// The id of the active API-key account. Defaults to 'default' for
+  /// backwards compat. Multi-account UI (issue #12) lets the user create
+  /// additional ids like 'work', 'test', etc.
+  final String accountId;
+
+  /// z.ai API key in form `<id>.<secret>`. Only set in [AuthMode.apiKey].
   final String? apiKey;
-  final String? jwtSecret;
 
   /// chat.z.ai guest JWT. Only set in [AuthMode.guest].
   final String? guestToken;
   final String? guestUserId;
+
+  /// Whether to sign a short-lived JWT (HS256, ms timestamps, sign_type:
+  /// SIGN header) using the secret half of [apiKey], rather than sending
+  /// the raw API key as Bearer. Only meaningful in [AuthMode.apiKey] and
+  /// only when the key is in `<id>.<secret>` form. (issue #8)
+  final bool useJwtAuth;
+
+  /// How long the signed JWT is valid for. Default: 1 hour.
+  final Duration jwtValidity;
 
   final AuthStatus status;
   final String? lastError;
 
   /// True if the user is signed in (in either mode).
   bool get signedIn =>
-      (mode == AuthMode.guest && guestToken != null && guestToken!.isNotEmpty) ||
-      (mode == AuthMode.apiKey && apiKey != null && apiKey!.isNotEmpty) &&
-          status == AuthStatus.signedIn;
+      (mode == AuthMode.guest &&
+          guestToken != null &&
+          guestToken!.isNotEmpty) ||
+      (mode == AuthMode.apiKey &&
+          apiKey != null &&
+          apiKey!.isNotEmpty &&
+          status == AuthStatus.signedIn);
 
-  /// Returns the Bearer token to use in API requests, depending on mode.
-  String? get bearerToken =>
-      mode == AuthMode.guest ? guestToken : (mode == AuthMode.apiKey ? apiKey : null);
+  /// Returns the parsed (id, secret) halves of [apiKey]. Returns null if
+  /// the key is not in `<id>.<secret>` form.
+  ZaiApiKeyParts? get apiKeyParts =>
+      apiKey == null ? null : ZaiApiKeyParts.tryParse(apiKey!);
+
+  /// Returns the Bearer token to use in API requests, depending on mode
+  /// and [useJwtAuth]. If [useJwtAuth] is true and the key is composite,
+  /// returns a freshly signed JWT. Otherwise returns the raw key.
+  String? get bearerToken {
+    if (mode == AuthMode.guest) return guestToken;
+    if (mode == AuthMode.apiKey) {
+      if (useJwtAuth) {
+        final parts = apiKeyParts;
+        if (parts != null) {
+          return signZaiJwt(parts: parts, validity: jwtValidity);
+        }
+      }
+      return apiKey;
+    }
+    return null;
+  }
 
   /// Returns the API base URL to use, depending on mode.
   String get apiBaseUrl => mode == AuthMode.guest
@@ -88,25 +127,32 @@ class AuthState {
 
   AuthState copyWith({
     AuthMode? mode,
+    String? accountId,
     Object? apiKey = _sentinel,
-    Object? jwtSecret = _sentinel,
     Object? guestToken = _sentinel,
     Object? guestUserId = _sentinel,
+    bool? useJwtAuth,
+    Duration? jwtValidity,
     AuthStatus? status,
     Object? lastError = _sentinel,
   }) {
     return AuthState(
       mode: mode ?? this.mode,
-      apiKey: identical(apiKey, _sentinel) ? this.apiKey : apiKey as String?,
-      jwtSecret: identical(jwtSecret, _sentinel) ? this.jwtSecret : jwtSecret as String?,
-      guestToken:
-          identical(guestToken, _sentinel) ? this.guestToken : guestToken as String?,
+      accountId: accountId ?? this.accountId,
+      apiKey:
+          identical(apiKey, _sentinel) ? this.apiKey : apiKey as String?,
+      guestToken: identical(guestToken, _sentinel)
+          ? this.guestToken
+          : guestToken as String?,
       guestUserId: identical(guestUserId, _sentinel)
           ? this.guestUserId
           : guestUserId as String?,
+      useJwtAuth: useJwtAuth ?? this.useJwtAuth,
+      jwtValidity: jwtValidity ?? this.jwtValidity,
       status: status ?? this.status,
-      lastError:
-          identical(lastError, _sentinel) ? this.lastError : lastError as String?,
+      lastError: identical(lastError, _sentinel)
+          ? this.lastError
+          : lastError as String?,
     );
   }
 }
@@ -117,35 +163,46 @@ enum AuthStatus { signedOut, loading, signedIn, error }
 
 /// Notifier that owns the [AuthState].
 class AuthNotifier extends StateNotifier<AuthState> {
-  AuthNotifier(this._secure, this._dio) : super(const AuthState());
+  AuthNotifier(this._ref, this._secure, this._dio, this._prefs)
+      : super(const AuthState());
 
+  final Ref _ref;
   final SecureStorageService _secure;
   final Dio _dio;
+  final SharedPreferences _prefs;
+
+  /// Lazily resolves the [AccountRepository] via Riverpod. Returns null
+  /// if the database is not yet open or the provider fails.
+  Future<AccountRepository?> _accountRepo() async {
+    try {
+      // Wait for the FutureProvider to resolve.
+      return await _ref.read(accountRepositoryProvider.future);
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Called from the splash screen.
   ///
   /// 1. If an API key is present in secure storage, transition to
-  ///    [AuthMode.apiKey].
+  ///    [AuthMode.apiKey] (restoring the [useJwtAuth] preference).
   /// 2. Otherwise, automatically fetch a guest token from
   ///    `GET https://chat.z.ai/api/v1/auths/` and transition to
   ///    [AuthMode.guest].
-  /// 3. If the guest fetch fails too, fall back to [AuthStatus.error] — the
-  ///    UI will offer to retry or to switch to API-key mode.
+  /// 3. If the guest fetch fails too, fall back to [AuthStatus.error].
   Future<void> restore() async {
     state = state.copyWith(status: AuthStatus.loading);
     try {
       final key = await _secure.getApiKey();
-      final secret = await _secure.getJwtSecret();
       if (key != null && key.isNotEmpty) {
         state = AuthState(
           mode: AuthMode.apiKey,
           apiKey: key,
-          jwtSecret: secret,
+          useJwtAuth: _prefs.getBool(_kPrefUseJwtAuth) ?? false,
           status: AuthStatus.signedIn,
         );
         return;
       }
-      // No API key → try guest mode.
       final guest = await _fetchGuestToken();
       if (guest != null) {
         state = AuthState(
@@ -192,18 +249,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Switch to API-key mode and persist the key.
-  Future<void> signInWithKey(String apiKey, {String? jwtSecret}) async {
+  /// Switch to API-key mode and persist the key for the current account.
+  Future<void> signInWithKey(String apiKey) async {
     state = state.copyWith(status: AuthStatus.loading);
     try {
-      await _secure.setApiKey(apiKey);
-      if (jwtSecret != null) {
-        await _secure.setJwtSecret(jwtSecret);
-      }
+      await _secure.setApiKeyForAccount(state.accountId, apiKey);
       state = AuthState(
         mode: AuthMode.apiKey,
+        accountId: state.accountId,
         apiKey: apiKey,
-        jwtSecret: jwtSecret,
+        useJwtAuth: _prefs.getBool(_kPrefUseJwtAuth) ?? false,
         status: AuthStatus.signedIn,
       );
     } catch (e) {
@@ -214,10 +269,112 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Sign out: clear the API key (and drop the guest token if in guest mode).
+  /// Adds a new account with the given id, label, and API key, and
+  /// switches to it (issue #12).
+  ///
+  /// Returns true on success, false if an account with the same id
+  /// already exists or the database is not ready.
+  Future<bool> addAccount({
+    required String id,
+    required String label,
+    required String apiKey,
+  }) async {
+    final repo = await _accountRepo();
+    if (repo == null) return false;
+    if (await repo.findById(id) != null) return false;
+    await repo.upsert(Account(
+      id: id,
+      label: label,
+      apiBaseUrl: AppConfig.defaultApiBaseUrl,
+      createdAt: DateTime.now().toUtc(),
+    ));
+    await _secure.setApiKeyForAccount(id, apiKey);
+    await repo.touchLastUsed(id);
+    _ref.invalidate(accountRepositoryProvider);
+    state = AuthState(
+      mode: AuthMode.apiKey,
+      accountId: id,
+      apiKey: apiKey,
+      useJwtAuth: _prefs.getBool(_kPrefUseJwtAuth) ?? false,
+      status: AuthStatus.signedIn,
+    );
+    return true;
+  }
+
+  /// Switches to the account with the given id. Loads its API key from
+  /// secure storage. Returns false if no such account exists, no API key
+  /// is stored for it, or the database is not ready.
+  Future<bool> switchToAccount(String id) async {
+    final repo = await _accountRepo();
+    if (repo == null) return false;
+    final account = await repo.findById(id);
+    if (account == null) return false;
+    final key = await _secure.getApiKeyForAccount(id);
+    if (key == null || key.isEmpty) return false;
+    await repo.touchLastUsed(id);
+    state = AuthState(
+      mode: AuthMode.apiKey,
+      accountId: id,
+      apiKey: key,
+      useJwtAuth: _prefs.getBool(_kPrefUseJwtAuth) ?? false,
+      status: AuthStatus.signedIn,
+    );
+    return true;
+  }
+
+  /// Deletes the account with the given id. Also wipes the API key from
+  /// secure storage. If the account is currently active, falls back to
+  /// guest mode.
+  ///
+  /// The 'default' account cannot be deleted (use signOut instead).
+  /// Returns true on success.
+  Future<bool> deleteAccount(String id) async {
+    if (id == 'default') return false;
+    final repo = await _accountRepo();
+    if (repo == null) return false;
+    final deleted = await repo.delete(id);
+    if (deleted == 0) return false;
+    await _secure.deleteApiKeyForAccount(id);
+    _ref.invalidate(accountRepositoryProvider);
+    if (state.accountId == id) {
+      await _fallbackToGuest();
+    }
+    return true;
+  }
+
+  Future<void> _fallbackToGuest() async {
+    final guest = await _fetchGuestToken();
+    if (guest != null) {
+      state = AuthState(
+        mode: AuthMode.guest,
+        guestToken: guest.token,
+        guestUserId: guest.userId,
+        status: AuthStatus.signedIn,
+      );
+    } else {
+      state = const AuthState(status: AuthStatus.signedOut);
+    }
+  }
+
+  /// Toggle JWT auth mode (issue #8). Persists to SharedPreferences so the
+  /// preference survives app restarts.
+  ///
+  /// When [useJwtAuth] is true, [AuthState.bearerToken] returns a freshly
+  /// signed JWT (HS256, ms timestamps, sign_type: SIGN header) using the
+  /// secret half of the API key, instead of the raw key. Only effective
+  /// when the key is in `<id>.<secret>` form — if not, this method is
+  /// a no-op.
+  Future<void> setUseJwtAuth(bool value) async {
+    // Only allow turning on JWT auth if the key is composite.
+    if (value && state.apiKeyParts == null) return;
+    await _prefs.setBool(_kPrefUseJwtAuth, value);
+    state = state.copyWith(useJwtAuth: value);
+  }
+
+  /// Sign out: clear the API key for the current account (and drop the
+  /// guest token if in guest mode).
   Future<void> signOut() async {
-    await _secure.deleteApiKey();
-    await _secure.setJwtSecret(null);
+    await _secure.deleteApiKeyForAccount(state.accountId);
     state = const AuthState(status: AuthStatus.signedOut);
   }
 
@@ -271,12 +428,15 @@ class _GuestAuth {
   final String? userId;
 }
 
+const String _kPrefUseJwtAuth = '${AppConfig.prefsPrefix}use_jwt_auth';
+
 /// Provides the [AuthNotifier].
 final authStateProvider =
     StateNotifierProvider<AuthNotifier, AuthState>((ref) {
   final secure = ref.watch(secureStorageProvider);
   final dio = ref.watch(dioProvider);
-  return AuthNotifier(secure, dio);
+  final prefs = ref.watch(sharedPrefsProvider);
+  return AuthNotifier(ref, secure, dio, prefs);
 });
 
 /// Helper: returns the [ZaiApiClient] for a single test API call, used by

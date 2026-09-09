@@ -5,11 +5,11 @@
 //  - repositories (one per table)
 //  - settings state (theme mode, locale, model selection)
 //  - account state (signed-in/out)
-//  - chat list state (paginated chats, current chat, current messages)
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logging/logging.dart' show Level;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common/sqflite.dart' show Database;
 
 import '../core/config/app_config.dart';
@@ -17,7 +17,6 @@ import '../core/logging/logging.dart';
 import '../core/storage/secure_storage_service.dart';
 import '../data/api/zai_api_client.dart';
 import '../data/database/database_helper.dart';
-import '../data/models/models.dart';
 import '../data/repositories/repositories.dart';
 import 'auth_state.dart';
 import 'settings_state.dart';
@@ -46,6 +45,13 @@ final secureStorageProvider = Provider<SecureStorageService>((ref) {
 /// Provides the shared [Dio] instance.
 final dioProvider = Provider<Dio>((ref) {
   return Dio();
+});
+
+/// Provides the shared [SharedPreferences] instance.
+///
+/// Overridden in `main()` to inject the actual instance.
+final sharedPrefsProvider = Provider<SharedPreferences>((ref) {
+  throw UnimplementedError('Override me in main()');
 });
 
 // ---- repositories -------------------------------------------------------

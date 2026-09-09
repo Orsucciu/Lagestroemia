@@ -336,6 +336,82 @@ sandbox).
 
 ---
 
+## 2026-09-09 — JWT auth mode + multi-account
+
+### `[feature]` JWT auth mode (issue #8)
+
+Reverse-engineered the exact JWT signing algorithm from
+`https://docs.z.ai/guides/develop/http/introduction` and implemented it
+in pure Dart using `package:crypto` (no new dependency):
+
+- `lib/core/auth/zai_jwt.dart` exposes `ZaiApiKeyParts` (id + secret
+  split helper) and `signZaiJwt(parts, validity, now)`.
+- The signed JWT has the standard `header.payload.signature` shape
+  with header `{"alg":"HS256","sign_type":"SIGN","typ":"JWT"}` and
+  payload `{"api_key": id, "exp": ms, "timestamp": ms}` (note: z.ai
+  uses milliseconds, not seconds).
+- 11 unit tests in `test/zai_jwt_test.dart` — including a byte-for-byte
+  cross-check against Python's PyJWT library (the two outputs are
+  identical for the same input).
+
+`AuthState` gains `useJwtAuth` + `jwtValidity` fields. When `useJwtAuth`
+is true and the key is in `<id>.<secret>` form, `AuthState.bearerToken`
+returns a freshly-signed JWT (1h default) instead of the raw key. The
+preference is persisted to `SharedPreferences`.
+
+Settings exposes a `SwitchListTile` (only visible when the API key is
+composite) that toggles JWT mode.
+
+### `[feature]` Multi-account (issue #12)
+
+`AuthState` gains an `accountId` field. Three new methods on
+`AuthNotifier`:
+
+- `addAccount({id, label, apiKey})` — creates a new account row in the
+  SQLite `accounts` table and stores the API key in the OS keychain
+  under a per-account slot (`lagestroemia.api_key.<id>`).
+- `switchToAccount(id)` — loads the key from secure storage, updates
+  the last-used timestamp, transitions to API-key mode for that
+  account.
+- `deleteAccount(id)` — wipes the key from secure storage and deletes
+  the account row. The `'default'` account cannot be deleted (use
+  `signOut` instead). Deleting the currently-active account falls
+  back to guest mode automatically.
+
+`AccountRepository.listAll()` returns all accounts sorted by
+last-used-desc. `SecureStorageService` has new per-account methods
+(`getApiKeyForAccount`, `setApiKeyForAccount`, `deleteApiKeyForAccount`)
+that keep backwards compatibility with the legacy single-account keys
+for the `'default'` account.
+
+Settings gains a new `_AccountsSection` widget: list of all accounts
+with the currently-active one highlighted, an "Add account" button
+(opening a dialog with id + label + key fields), per-row delete button
+with confirmation, and tap-to-switch behaviour.
+
+12 unit tests in `test/auth_state_test.dart` cover the multi-account
+and JWT-mode logic using a mock SecureStorageService and an in-memory
+SQLite database via `DatabaseHelper.forTest()` (a new test-only
+constructor that lets the test subclass override the `database`
+getter).
+
+### `[test]` Test summary
+
+27/27 tests pass:
+
+- 11 JWT helper tests (one cross-checks Python PyJWT byte-for-byte)
+- 1 widget smoke test (splash screen)
+- 12 auth state tests (JWT toggle + multi-account)
+- 3 live API tests against chat.z.ai (guest signup, captcha-required,
+  model list)
+
+### `[issue]` Status after this session
+
+11 of 12 GitHub issues closed. Only #2 remains open (blocked by PAT
+scope limitation — needs a workflow-scoped PAT).
+
+---
+
 ## Outstanding work for future sessions
 
 The following tasks are tracked as GitHub Issues under the

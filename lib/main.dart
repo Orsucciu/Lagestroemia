@@ -22,6 +22,7 @@ Future<void> main() async {
       settingsStateProvider.overrideWith(
         (ref) => SettingsNotifier(prefs),
       ),
+      sharedPrefsProvider.overrideWithValue(prefs),
     ],
     child: const LagestroemiaApp(),
   ));
@@ -34,9 +35,8 @@ class LagestroemiaApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsStateProvider);
     final router = ref.watch(routerProvider);
-    final locale = settings.localeTag == null
-        ? null
-        : Locale(settings.localeTag!);
+    final locale =
+        settings.localeTag == null ? null : Locale(settings.localeTag!);
     return MaterialApp.router(
       title: 'Lagestroemia',
       debugShowCheckedModeBanner: false,
