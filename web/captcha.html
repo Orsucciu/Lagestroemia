@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verification</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 16px;
+      height: 100%;
+      background: #fafafa;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    h2 {
+      margin: 0 0 12px 0;
+      font-size: 18px;
+      color: #333;
+      text-align: center;
+    }
+    p {
+      margin: 0 0 16px 0;
+      font-size: 13px;
+      color: #666;
+      text-align: center;
+      max-width: 320px;
+    }
+    #captcha-element {
+      width: 100%;
+      min-height: 320px;
+      max-width: 360px;
+    }
+    #trigger-button {
+      position: absolute;
+      left: -9999px;
+    }
+    #status {
+      margin-top: 16px;
+      font-size: 13px;
+      color: #888;
+      text-align: center;
+    }
+    .error {
+      color: #c0392b;
+    }
+    .success {
+      color: #27ae60;
+    }
+  </style>
+</head>
+<body>
+  <h2>Verification required</h2>
+  <p>Solve the captcha below to continue chatting.</p>
+  <div id="captcha-element"></div>
+  <button id="trigger-button" type="button" tabindex="-1" aria-hidden="true"></button>
+  <div id="status">Loading captcha…</div>
+
+  <script>
+    // Configuration injected by the opener via URL params.
+    var params = new URLSearchParams(window.location.search);
+    var SDK_URL = params.get('sdk') || 'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js';
+    var SCENE_ID = params.get('scene') || 'didk33e0';
+    var PREFIX = params.get('prefix') || 'no8xfe';
+    var REGION = params.get('region') || 'sgp';
+
+    var statusEl = document.getElementById('status');
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = kind || '';
+    }
+
+    // Send a message to the opener window. We use postMessage so this
+    // works cross-origin (the opener is the Flutter web app, this
+    // popup is loaded from the same origin, but Aliyun's captcha SDK
+    // may inject iframes from alicdn.com — those don't matter for
+    // us, we only care about the call from THIS page to the opener).
+    function sendToOpener(type, data) {
+      var payload = { source: 'lagestroemia-captcha', type: type, data: data };
+      try {
+        // opener may be null if the popup was opened in a new tab
+        // rather than via window.open from the app.
+        if (window.opener) {
+          window.opener.postMessage(payload, '*');
+        }
+      } catch (e) {
+        console.error('postMessage to opener failed:', e);
+      }
+    }
+
+    function loadScript(src, onload, onerror) {
+      var s = document.createElement('script');
+      s.src = src; s.async = true;
+      s.onload = onload; s.onerror = onerror;
+      document.head.appendChild(s);
+    }
+
+    setStatus('Loading captcha SDK…');
+    loadScript(SDK_URL, function () {
+      if (!window.initAliyunCaptcha) {
+        setStatus('Error: initAliyunCaptcha not found', 'error');
+        sendToOpener('error', 'initAliyunCaptcha not found');
+        return;
+      }
+      setStatus('Rendering captcha…');
+      try {
+        window.initAliyunCaptcha({
+          SceneId: SCENE_ID,
+          mode: 'embed',
+          element: '#captcha-element',
+          button: '#trigger-button',
+          prefix: PREFIX,
+          region: REGION,
+          language: 'en',
+          timeout: 60000,
+          delayBeforeSuccess: false,
+          success: function (v) {
+            var param = v || '';
+            setStatus('Verified! Sending to app…', 'success');
+            sendToOpener('success', param);
+            // Close the popup after a short delay so the user sees the
+            // success state.
+            setTimeout(function () { window.close(); }, 400);
+          },
+          fail: function (e) {
+            setStatus('Captcha failed: ' + String(e || 'fail'), 'error');
+            sendToOpener('error', String(e || 'fail'));
+          },
+          onError: function (e) {
+            setStatus('Captcha error: ' + String(e || 'error'), 'error');
+            sendToOpener('error', String(e || 'error'));
+          }
+        });
+      } catch (e) {
+        setStatus('initAliyunCaptcha threw: ' + e, 'error');
+        sendToOpener('error', String(e));
+      }
+    }, function () {
+      setStatus('Failed to load captcha SDK', 'error');
+      sendToOpener('error', 'Failed to load captcha SDK');
+    });
+  </script>
+</body>
+</html>
