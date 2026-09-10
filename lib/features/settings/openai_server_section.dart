@@ -13,13 +13,13 @@
 // from the same machine. On Web/iOS/macOS this section is hidden
 // because we cannot bind a TCP listener.
 
-import 'dart:io' show Platform;
-
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/platform/platform_info.dart' show PlatformInfo;
 import '../../data/api/openai_api_server.dart';
 import '../../state/openai_server_state.dart';
 
@@ -54,7 +54,10 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isLinux && !Platform.isWindows && !Platform.isAndroid) {
+    // Hide on Web and on platforms without a TCP listener (iOS/macOS).
+    // dart:io's Platform.* throws on Web — guard with kIsWeb first.
+    if (kIsWeb ||
+        (!PlatformInfo.isLinux && !PlatformInfo.isWindows && !PlatformInfo.isAndroid)) {
       return const SizedBox.shrink();
     }
     _ensureInit();

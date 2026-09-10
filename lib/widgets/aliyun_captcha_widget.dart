@@ -15,12 +15,11 @@
 //    can switch to API-key mode (no captcha needed) or solve the
 //    captcha in a browser at chat.z.ai and paste the param manually.
 
-import 'dart:io' show Platform;
-
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
 import '../core/config/app_config.dart';
+import '../core/platform/platform_info.dart' show PlatformInfo;
 import 'aliyun_captcha_html.dart';
 
 // On supported native platforms (Android/iOS/Windows) we use the real
@@ -51,7 +50,10 @@ class CaptchaWidget extends StatelessWidget {
     // Web: flutter_inappwebview uses an iframe on web, which breaks the
     // captcha SDK's postMessage callback. Show the fallback instead.
     // Native Linux/macOS: no webview implementation available. Same fallback.
-    if (kIsWeb || Platform.isLinux || Platform.isMacOS) {
+    //
+    // We use kIsWeb + PlatformInfo.* instead of dart:io's Platform.*
+    // because Platform.* throws on the Web target.
+    if (kIsWeb || PlatformInfo.isLinux || PlatformInfo.isMacOS) {
       return _CaptchaFallback(
         height: height,
         onSolved: onSolved,
@@ -114,7 +116,7 @@ class _CaptchaFallbackState extends State<_CaptchaFallback> {
               Text(
                 kIsWeb
                     ? 'In-app captcha not available on Web.'
-                    : 'Captcha widget not available on ${Platform.operatingSystem}.',
+                    : 'Captcha widget not available on ${PlatformInfo.operatingSystem}.',
                 style: Theme.of(context).textTheme.titleSmall,
                 textAlign: TextAlign.center,
               ),

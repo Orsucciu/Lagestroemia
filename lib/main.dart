@@ -88,10 +88,11 @@ Future<void> main() async {
 }
 
 String _platformInfo() {
+  if (kIsWeb) return 'web';
   try {
     return '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
   } catch (_) {
-    return 'web';
+    return 'unknown';
   }
 }
 

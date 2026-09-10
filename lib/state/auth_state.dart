@@ -33,6 +33,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/auth/zai_jwt.dart';
 import '../core/config/app_config.dart';
+import '../core/platform/platform_info.dart';
 import '../core/result/result.dart';
 import '../core/storage/secure_storage_service.dart';
 import '../data/api/zai_api_client.dart';
@@ -486,9 +487,16 @@ class _GuestAuth {
 }
 
 /// Returns a platform-appropriate User-Agent string. On Android/iOS, uses
-/// a mobile UA; on desktop, uses a desktop Chrome UA. This matters because
-/// some CDNs/firewalls block desktop UAs from mobile networks.
+/// a mobile UA; on desktop, uses a desktop Chrome UA; on Web, uses a
+/// generic desktop Chrome UA (the browser will override it anyway, but
+/// we send an explicit one because some CDNs/firewalls block requests
+/// with no User-Agent). This matters because some CDNs/firewalls block
+/// desktop UAs from mobile networks.
 String get _userAgent {
+  if (kIsWeb) {
+    return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like '
+        'Gecko) Chrome/130.0.0.0 Safari/537.36';
+  }
   if (Platform.isAndroid || Platform.isIOS) {
     return 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, '
         'like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';

@@ -12,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/config/app_config.dart';
+import '../core/platform/platform_info.dart' show PlatformInfo;
 import '../data/api/openai_api_server.dart';
 import 'anon_profiles_state.dart';
 import 'auth_state.dart';
@@ -124,24 +125,25 @@ class OpenAiServerNotifier extends StateNotifier<OpenAiServerStatus> {
   /// On app start, re-opens the server if it was running before.
   /// Called from the splash screen or main(). Returns the new status.
   Future<OpenAiServerStatus> restoreIfEnabled() async {
-    // ignore: avoid_print
+    // On Web, the OpenAI-compat local server isn't supported (dart:io
+    // HttpServer doesn't work on the Web target). Skip immediately.
+    if (kIsWeb) {
+      _debugLog('[SERVER] restoreIfEnabled(): skipping (web platform)');
+      return const OpenAiServerStatus();
+    }
     _debugLog('[SERVER] restoreIfEnabled(): platform=${Platform.operatingSystem}');
     if (!Platform.isLinux && !Platform.isWindows && !Platform.isAndroid) {
-      // ignore: avoid_print
       _debugLog('[SERVER] restoreIfEnabled(): skipping (platform not supported)');
       return const OpenAiServerStatus();
     }
     final cfg = loadConfig();
-    // ignore: avoid_print
     _debugLog('[SERVER] restoreIfEnabled(): enabled=${cfg.enabled}, port=${cfg.port}');
     if (!cfg.enabled) {
       return const OpenAiServerStatus();
     }
-    // ignore: avoid_print
     _debugLog('[SERVER] restoreIfEnabled(): starting server...');
     final status = await _server.start(cfg);
     state = status;
-    // ignore: avoid_print
     _debugLog('[SERVER] restoreIfEnabled(): status running=${status.running}, error=${status.error}');
     return status;
   }

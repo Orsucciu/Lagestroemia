@@ -5,11 +5,11 @@
 // captcha in an InAppWebView. On Linux/macOS (which don't have a
 // webview implementation), it shows a fallback message.
 
-import 'dart:io' show Platform;
-
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../core/config/app_config.dart';
+import '../core/platform/platform_info.dart' show PlatformInfo;
 import 'aliyun_captcha_html.dart';
 
 export 'aliyun_captcha_html.dart' show buildCaptchaHtmlForTest;
@@ -36,13 +36,15 @@ class CaptchaWidget extends StatefulWidget {
 class _CaptchaWidgetState extends State<CaptchaWidget> {
   @override
   Widget build(BuildContext context) {
-    if (Platform.isLinux || Platform.isMacOS) {
+    // We use kIsWeb + PlatformInfo.* instead of dart:io's Platform.*
+    // because Platform.* throws on the Web target.
+    if (kIsWeb || PlatformInfo.isLinux || PlatformInfo.isMacOS) {
       return _CaptchaFallback(
         height: widget.height,
         onError: widget.onError,
       );
     }
-    // On supported platforms (Android, iOS, Windows, Web), use the
+    // On supported platforms (Android, iOS, Windows), use the
     // real webview. We import it lazily via a conditional import to
     // avoid the build failure on Linux/macOS.
     return _buildWebview(context);
@@ -80,7 +82,9 @@ class _CaptchaFallback extends StatelessWidget {
               const Icon(Icons.warning_amber, size: 40),
               const SizedBox(height: 8),
               Text(
-                'Captcha widget not available on ${Platform.operatingSystem}.',
+                kIsWeb
+                    ? 'Captcha widget not available on Web.'
+                    : 'Captcha widget not available on ${PlatformInfo.operatingSystem}.',
                 style: Theme.of(context).textTheme.titleSmall,
                 textAlign: TextAlign.center,
               ),
@@ -167,9 +171,9 @@ class CaptchaWebviewImpl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // This stub is replaced by the conditional import on supported
-    // platforms. On Linux/macOS, this code path is never reached
+    // platforms. On Linux/macOS/Web, this code path is never reached
     // because _CaptchaWidgetState uses _CaptchaFallback instead.
     throw UnsupportedError('CaptchaWebviewImpl should not be called '
-        'on ${Platform.operatingSystem}');
+        'on ${PlatformInfo.operatingSystem}');
   }
 }

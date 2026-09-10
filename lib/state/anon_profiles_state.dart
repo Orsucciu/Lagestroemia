@@ -21,6 +21,7 @@ import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logging/logging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -224,11 +225,17 @@ class AnonProfilesNotifier extends StateNotifier<AnonProfilesState> {
 
   Future<_GuestAuth?> _fetchGuestToken() async {
     try {
-      final ua = Platform.isAndroid || Platform.isIOS
-          ? 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, '
-              'like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'
-          : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, '
-              'like Gecko) Chrome/130.0.0.0 Safari/537.36';
+      // Pick a User-Agent appropriate for the platform. On Web the
+      // browser sets its own UA anyway; we still send one explicitly
+      // because some CDNs/firewalls block requests without a UA.
+      final ua = kIsWeb
+          ? 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, '
+              'like Gecko) Chrome/130.0.0.0 Safari/537.36'
+          : (Platform.isAndroid || Platform.isIOS
+              ? 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, '
+                  'like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'
+              : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, '
+                  'like Gecko) Chrome/130.0.0.0 Safari/537.36');
       final response = await _dio.get<dynamic>(
         '${AppConfig.chatZaiApiBaseUrl}/v1/auths/',
         options: Options(
