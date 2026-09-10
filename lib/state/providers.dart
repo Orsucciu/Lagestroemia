@@ -103,38 +103,54 @@ final kvRepositoryProvider = FutureProvider<KvRepository>((ref) async {
 /// widget when the user solves the Aliyun captcha in guest mode).
 final captchaVerifyParamProvider = StateProvider<String?>((ref) => null);
 
-/// Fetches the live model list from the active backend at startup.
+/// Fetches the live model list with display names from the active
+/// backend at startup.
 ///
 /// In guest mode: calls `GET /api/models` on chat.z.ai and returns the
-/// actual list of model ids the backend exposes (which can change
-/// without notice — see the comment on
-/// [AppConfig.chatZaiKnownModels]). On any failure (network, captcha
-/// wall, parsing), falls back to [AppConfig.chatZaiKnownModels].
+/// actual list of [ModelInfo] (id + display name) the backend exposes.
+/// The display name (e.g. `GLM-5.3-Flash`) is what the website shows in
+/// its model picker; the id (e.g. `x-preview-l`) is what we send in the
+/// chat completions body.
 ///
 /// In API-key mode: returns [AppConfig.knownModels] (the docs don't
-/// expose a list endpoint).
+/// expose a list endpoint) with the id used as the display name.
+///
+/// On any failure (network, captcha wall, parsing), falls back to the
+/// hardcoded [AppConfig.chatZaiKnownModels] with display-name lookup
+/// via `_fallbackDisplayName` (see zai_api_client.dart).
 ///
 /// The chat screen watches this provider to populate its model picker.
 /// The fallback is synchronous, so the picker always has at least the
 /// hardcoded list to show — even before the fetch completes.
 final availableModelsProvider =
-    FutureProvider<List<String>>((ref) async {
+    FutureProvider<List<ModelInfo>>((ref) async {
   final auth = ref.watch(authStateProvider);
   if (auth.mode != AuthMode.guest) {
-    return List<String>.from(AppConfig.knownModels);
+    return [
+      for (final id in AppConfig.knownModels) ModelInfo(id: id, name: id),
+    ];
   }
   final client = ref.watch(apiClientProvider);
   if (client == null) {
-    return List<String>.from(AppConfig.chatZaiKnownModels);
+    return [
+      for (final id in AppConfig.chatZaiKnownModels)
+        ModelInfo(id: id, name: id),
+    ];
   }
   try {
-    final live = await client.listModels();
+    final live = await client.listModelsWithNames();
     if (live.isEmpty) {
-      return List<String>.from(AppConfig.chatZaiKnownModels);
+      return [
+        for (final id in AppConfig.chatZaiKnownModels)
+          ModelInfo(id: id, name: id),
+      ];
     }
     return live;
   } catch (_) {
-    return List<String>.from(AppConfig.chatZaiKnownModels);
+    return [
+      for (final id in AppConfig.chatZaiKnownModels)
+        ModelInfo(id: id, name: id),
+    ];
   }
 });
 

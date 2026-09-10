@@ -524,6 +524,54 @@ class ZaiApiClient {
     }
   }
 
+  /// Fetches the model list with display names from the active backend.
+  ///
+  /// On chat.z.ai each entry has both an `id` (the string sent in the
+  /// chat completions body, e.g. `x-preview-l`) and a `name` (the
+  /// human-readable label shown in the website's model picker, e.g.
+  /// `GLM-5.3-Flash`). The website picker shows the name; this method
+  /// returns both so the chat screen can do the same.
+  ///
+  /// On api.z.ai the docs don't expose a list endpoint, so we return
+  /// the hardcoded [AppConfig.knownModels] list with the id used as
+  /// the display name too.
+  Future<List<ModelInfo>> listModelsWithNames() async {
+    if (_backend == ApiBackend.apiZai) {
+      return [
+        for (final id in AppConfig.knownModels) ModelInfo(id: id, name: id),
+      ];
+    }
+    try {
+      final response = await _dio.get<dynamic>(AppConfig.chatZaiModelsPath);
+      final data = response.data;
+      final m = data is String
+          ? jsonDecode(data) as Map<String, Object?>
+          : data as Map<String, Object?>;
+      final list = (m['data'] as List<Object?>?) ?? const <Object?>[];
+      final result = <ModelInfo>[];
+      for (final e in list) {
+        final entry = e as Map<Object?, Object?>;
+        final id = entry['id'] as String?;
+        if (id == null || id.isEmpty) continue;
+        final name = (entry['name'] as String?) ?? id;
+        result.add(ModelInfo(id: id, name: name));
+      }
+      if (result.isEmpty) {
+        return [
+          for (final id in AppConfig.chatZaiKnownModels)
+            ModelInfo(id: id, name: _fallbackDisplayName(id)),
+        ];
+      }
+      return result;
+    } catch (e) {
+      _log.warning('listModelsWithNames failed: $e');
+      return [
+        for (final id in AppConfig.chatZaiKnownModels)
+          ModelInfo(id: id, name: _fallbackDisplayName(id)),
+      ];
+    }
+  }
+
   // ---- body builder ----------------------------------------------------
 
   Map<String, Object?> _buildBody({
@@ -581,6 +629,53 @@ class AssistantResponse {
   final List<Map<String, Object?>>? toolCalls;
   final ChatUsage usage;
   final String finishReason;
+}
+
+/// A model id + its display name, as returned by the chat.z.ai
+/// `GET /api/models` endpoint.
+///
+/// The [id] is the string sent in the chat completions body (e.g.
+/// `x-preview-l`); the [name] is the human-readable label shown in
+/// the website's model picker (e.g. `GLM-5.3-Flash`).
+class ModelInfo {
+  const ModelInfo({required this.id, required this.name});
+  final String id;
+  final String name;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is ModelInfo && other.id == id && other.name == name);
+
+  @override
+  int get hashCode => Object.hash(id, name);
+
+  @override
+  String toString() => 'ModelInfo($id -> $name)';
+}
+
+/// Returns a human-readable display name for a chat.z.ai model id, used
+/// as a fallback when the live `GET /api/models` fetch fails. Maps the
+/// raw ids to the names chat.z.ai actually shows on the website.
+String _fallbackDisplayName(String id) {
+  const map = <String, String>{
+    'x-preview-l': 'GLM-5.3-Flash',
+    'glm-5.3': 'GLM-5.3',
+    'glm-5.2': 'GLM-5.2',
+    'GLM-5-Turbo': 'GLM-5-Turbo',
+    'GLM-5v-Turbo': 'GLM-5V-Turbo',
+    'glm-4.7': 'GLM-4.7',
+    'glm-4.6v': 'GLM-4.6V',
+    '0727-106B-API': 'GLM-4.5-Air',
+    '0727-360B-API': 'GLM-4.5',
+    'GLM-4.1V-Thinking-FlashX': 'GLM-4.1V-9B-Thinking',
+    'deep-research': 'Z1-Rumination',
+    'zero': 'Z1-32B',
+    'glm-4-flash': '任务专用',
+    '0808-360B-DR': '0808-360B-DR',
+    'glm-4-air-250414': 'GLM-4-32B',
+  };
+  return map[id] ?? id;
 }
 
 /// Metadata for a file uploaded to z.ai's file storage.

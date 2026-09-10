@@ -18,6 +18,7 @@ import '../../l10n/generated/app_localizations.dart';
 import '../../state/auth_state.dart';
 import '../../state/chat_state.dart';
 import '../../state/providers.dart';
+import '../../data/api/zai_api_client.dart' show ModelInfo;
 import '../../data/models/models.dart';
 import '../../widgets/aliyun_captcha_widget.dart';
 import '../../widgets/error_banner.dart';
@@ -43,19 +44,33 @@ class ChatScreen extends ConsumerWidget {
     final modelsAsync = ref.watch(availableModelsProvider);
 
     // The model list is now fetched live from the backend (with a
-    // hardcoded fallback — see availableModelsProvider). The picker
-    // shows the fallback list immediately while the fetch is in
-    // flight, then swaps in the live list when it arrives.
-    final knownModels = modelsAsync.valueOrNull ??
-        (auth.mode == AuthMode.guest
-            ? AppConfig.chatZaiKnownModels
-            : AppConfig.knownModels);
+    // hardcoded fallback — see availableModelsProvider). Each entry has
+    // both an id (sent to the API) and a display name (shown in the
+    // picker). The picker shows the fallback list immediately while
+    // the fetch is in flight, then swaps in the live list when it
+    // arrives.
+    final fallbackModels = auth.mode == AuthMode.guest
+        ? AppConfig.chatZaiKnownModels
+        : AppConfig.knownModels;
+    final List<ModelInfo> knownModels = modelsAsync.valueOrNull ??
+        [
+          for (final id in fallbackModels) ModelInfo(id: id, name: id),
+        ];
 
     // Currently-selected model (or the default for the active backend).
     final currentModel = currentChat.valueOrNull?.model ??
         (auth.mode == AuthMode.guest
             ? AppConfig.defaultGuestModel
             : AppConfig.defaultModel);
+
+    // Display name for the currently-selected model. Falls back to the
+    // raw id if the live list hasn't loaded yet or the model isn't in it.
+    final currentModelDisplay = knownModels
+        .firstWhere(
+          (m) => m.id == currentModel,
+          orElse: () => ModelInfo(id: currentModel, name: currentModel),
+        )
+        .name;
 
     // Capabilities of the current model.
     final isAgentCapable = auth.mode == AuthMode.guest
@@ -144,7 +159,8 @@ class ChatScreen extends ConsumerWidget {
           // toggle is only enabled when the current model supports it.
           _ModeBar(
             knownModels: knownModels,
-            currentModel: currentModel,
+            currentModelId: currentModel,
+            currentModelDisplay: currentModelDisplay,
             onModelSelected: (model) async {
               final id = chatIdState;
               if (id == null) return;
@@ -352,7 +368,8 @@ final _allPromptsForPickerProvider = FutureProvider<List<SystemPrompt>>((ref) as
 class _ModeBar extends StatelessWidget {
   const _ModeBar({
     required this.knownModels,
-    required this.currentModel,
+    required this.currentModelId,
+    required this.currentModelDisplay,
     required this.onModelSelected,
     required this.isAgentCapable,
     required this.agentModeOn,
@@ -362,8 +379,9 @@ class _ModeBar extends StatelessWidget {
     required this.onDeepThinkToggled,
   });
 
-  final List<String> knownModels;
-  final String currentModel;
+  final List<ModelInfo> knownModels;
+  final String currentModelId;
+  final String currentModelDisplay;
   final ValueChanged<String> onModelSelected;
   final bool isAgentCapable;
   final bool agentModeOn;
@@ -385,22 +403,24 @@ class _ModeBar extends StatelessWidget {
         spacing: 8,
         runSpacing: 4,
         children: <Widget>[
-          // Model picker — clean, just the model name.
+          // Model picker — shows the display name (e.g. "GLM-5.3-Flash"),
+          // not the raw id (e.g. "x-preview-l"). The id is the value
+          // passed to onModelSelected.
           PopupMenuButton<String>(
             tooltip: 'Select model',
             onSelected: onModelSelected,
             itemBuilder: (_) => <PopupMenuEntry<String>>[
               for (final m in knownModels)
                 PopupMenuItem(
-                  value: m,
+                  value: m.id,
                   child: Row(
                     children: <Widget>[
-                      if (m == currentModel)
+                      if (m.id == currentModelId)
                         const Icon(Icons.check, size: 18)
                       else
                         const SizedBox(width: 18),
                       const SizedBox(width: 8),
-                      Expanded(child: Text(m)),
+                      Expanded(child: Text(m.name)),
                     ],
                   ),
                 ),
@@ -413,7 +433,7 @@ class _ModeBar extends StatelessWidget {
                   Icon(Icons.tune, size: 18, color: theme.colorScheme.primary),
                   const SizedBox(width: 6),
                   Text(
-                    currentModel,
+                    currentModelDisplay,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
