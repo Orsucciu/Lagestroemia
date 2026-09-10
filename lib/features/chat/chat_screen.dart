@@ -40,12 +40,16 @@ class ChatScreen extends ConsumerWidget {
     final messagesAsync = ref.watch(currentChatMessagesProvider);
     final composer = ref.watch(chatComposerProvider);
     final currentChat = ref.watch(currentChatProvider);
+    final modelsAsync = ref.watch(availableModelsProvider);
 
-    // The model list depends on the auth mode (different backends expose
-    // different models).
-    final knownModels = auth.mode == AuthMode.guest
-        ? AppConfig.chatZaiKnownModels
-        : AppConfig.knownModels;
+    // The model list is now fetched live from the backend (with a
+    // hardcoded fallback — see availableModelsProvider). The picker
+    // shows the fallback list immediately while the fetch is in
+    // flight, then swaps in the live list when it arrives.
+    final knownModels = modelsAsync.valueOrNull ??
+        (auth.mode == AuthMode.guest
+            ? AppConfig.chatZaiKnownModels
+            : AppConfig.knownModels);
 
     // Currently-selected model (or the default for the active backend).
     final currentModel = currentChat.valueOrNull?.model ??

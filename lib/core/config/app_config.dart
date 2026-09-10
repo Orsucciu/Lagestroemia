@@ -158,34 +158,50 @@ class AppConfig {
   ];
 
   /// Models available on chat.z.ai (guest mode), as returned by
-  /// `GET /api/models`. Sampled from a live response on 2026-09-09.
+  /// `GET /api/models`. Sampled from a live response on 2026-09-10.
   ///
-  /// Some IDs are non-obvious (`x-preview-l`, `0727-106B-API`) — these are
-  /// the actual strings the website sends in the chat completions body.
+  /// Some IDs are non-obvious (`x-preview-l`, `0727-106B-API`,
+  /// `0808-360B-DR`) — these are the actual strings the website sends
+  /// in the chat completions body.
+  ///
+  /// **Note**: this list is a fallback. The chat screen fetches the
+  /// live list from `GET /api/models` at startup (see
+  /// `chatZaiAvailableModelsProvider` in lib/state/providers.dart) and
+  /// uses that when available. This hardcoded list is only used if
+  /// the fetch fails (offline, captcha wall, etc.).
   static const List<String> chatZaiKnownModels = <String>[
     'glm-4.7',                      // GLM-4.7
-    'glm-4.6v',                      // GLM-4.6V (vision)
-    'glm-5.3',                       // GLM-5.3
-    'glm-5.2',                       // GLM-5.2
-    'GLM-5-Turbo',                   // GLM-5-Turbo
-    'GLM-5v-Turbo',                  // GLM-5V-Turbo (vision)
-    '0727-106B-API',                 // GLM-4.5-Air
-    '0727-360B-API',                 // GLM-4.5
-    'x-preview-l',                   // GLM-5.3-Flash (preview)
-    'deep-research',                 // Z1-Rumination
-    'zero',                          // Z1-32B
+    'glm-4.6v',                     // GLM-4.6V (vision)
+    'glm-5.3',                      // GLM-5.3
+    'glm-5.2',                      // GLM-5.2
+    'GLM-5-Turbo',                  // GLM-5-Turbo
+    'GLM-5v-Turbo',                 // GLM-5V-Turbo (vision)
+    '0727-106B-API',                // GLM-4.5-Air
+    '0727-360B-API',                // GLM-4.5
+    'x-preview-l',                  // GLM-5.3-Flash (preview)
+    'GLM-4.1V-Thinking-FlashX',     // GLM-4.1V-9B-Thinking (vision + thinking)
+    'deep-research',                // Z1-Rumination
+    'zero',                         // Z1-32B
+    'glm-4-flash',                  // 任务专用 (task-specific)
+    '0808-360B-DR',                 // 0808-360B-DR (deep research variant)
+    'glm-4-air-250414',             // GLM-4-32B
   ];
 
   /// Models on chat.z.ai that support **agent mode** (the model's
-  /// `meta.capabilities.agent_mode` field is `true` in the live response).
-  /// When the user picks one of these models, chat completions go through
-  /// [chatZaiAgentChatCompletionsPath] instead of the regular
-  /// [chatZaiChatCompletionsPath].
+  /// `meta.capabilities.agent_mode` field used to be `true` in the
+  /// live response — but chat.z.ai stopped reporting capabilities in
+  /// September 2026, so this list is now a heuristic based on the
+  /// model name + previously-observed capabilities).
   ///
-  /// Source: chat.z.ai `GET /api/models` response. Selected entries:
-  /// `glm-5.3`, `glm-5.2`, `GLM-5-Turbo`, `GLM-5v-Turbo`, `x-preview-l`,
-  /// `deep-research`, `zero`, `0727-106B-API`, `0727-360B-API`. All of
-  /// these have `agent_mode: true` in their `meta.capabilities`.
+  /// Heuristic: the GLM-5.x and GLM-4.5 generation, plus the Z1
+  /// reasoning models, are agent-capable. The smaller/older models
+  /// (glm-4-flash, glm-4-air, glm-4.6v, GLM-4.1V-Thinking-FlashX)
+  /// are NOT agent-capable.
+  ///
+  /// When the user picks one of these models, chat completions go
+  /// through [chatZaiAgentChatCompletionsPath] instead of the
+  /// regular [chatZaiChatCompletionsPath] (but only if the user also
+  /// turns on the "Agent" toggle — see Chat.agentMode).
   static const List<String> chatZaiAgentCapableModels = <String>[
     'glm-5.3',
     'glm-5.2',
@@ -196,6 +212,8 @@ class AppConfig {
     'zero',
     '0727-106B-API',
     '0727-360B-API',
+    '0808-360B-DR',
+    'glm-4.7',
   ];
 
   /// Models on api.z.ai (paid, API-key mode) that support agent mode.
@@ -223,9 +241,16 @@ class AppConfig {
 
   /// Models on chat.z.ai that support the "deep think" / reasoning
   /// streaming feature. The response includes a `reasoning_content`
-  /// field in the streamed delta. Source: chat.z.ai `GET /api/models`
-  /// — selected entries that report `thinking: true` or
-  /// `reasoning_content` capability in their `meta.capabilities`.
+  /// field in the streamed delta.
+  ///
+  /// Heuristic (since chat.z.ai no longer reports `capabilities.thinking`
+  /// in the API response): the GLM-5.x and GLM-4.7+ generation, the Z1
+  /// reasoning models (`deep-research`, `zero`, `0808-360B-DR`), and
+  /// any model with "Thinking" in its name (e.g.
+  /// `GLM-4.1V-Thinking-FlashX`) support deep thinking.
+  ///
+  /// The smaller/older models (glm-4-flash, glm-4-air-250414, glm-4.6v,
+  /// GLM-5-Turbo, GLM-5v-Turbo) do NOT support deep thinking.
   ///
   /// When the user picks one of these models, the chat screen shows a
   /// "Deep think" toggle that, when on, adds
@@ -234,13 +259,13 @@ class AppConfig {
     'glm-4.7',
     'glm-5.3',
     'glm-5.2',
-    'GLM-5-Turbo',
-    'GLM-5v-Turbo',
     'x-preview-l',
     'deep-research',
     'zero',
     '0727-106B-API',
     '0727-360B-API',
+    '0808-360B-DR',
+    'GLM-4.1V-Thinking-FlashX',
   ];
 
   /// Models on api.z.ai (paid, API-key mode) that support the

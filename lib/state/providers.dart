@@ -103,6 +103,41 @@ final kvRepositoryProvider = FutureProvider<KvRepository>((ref) async {
 /// widget when the user solves the Aliyun captcha in guest mode).
 final captchaVerifyParamProvider = StateProvider<String?>((ref) => null);
 
+/// Fetches the live model list from the active backend at startup.
+///
+/// In guest mode: calls `GET /api/models` on chat.z.ai and returns the
+/// actual list of model ids the backend exposes (which can change
+/// without notice — see the comment on
+/// [AppConfig.chatZaiKnownModels]). On any failure (network, captcha
+/// wall, parsing), falls back to [AppConfig.chatZaiKnownModels].
+///
+/// In API-key mode: returns [AppConfig.knownModels] (the docs don't
+/// expose a list endpoint).
+///
+/// The chat screen watches this provider to populate its model picker.
+/// The fallback is synchronous, so the picker always has at least the
+/// hardcoded list to show — even before the fetch completes.
+final availableModelsProvider =
+    FutureProvider<List<String>>((ref) async {
+  final auth = ref.watch(authStateProvider);
+  if (auth.mode != AuthMode.guest) {
+    return List<String>.from(AppConfig.knownModels);
+  }
+  final client = ref.watch(apiClientProvider);
+  if (client == null) {
+    return List<String>.from(AppConfig.chatZaiKnownModels);
+  }
+  try {
+    final live = await client.listModels();
+    if (live.isEmpty) {
+      return List<String>.from(AppConfig.chatZaiKnownModels);
+    }
+    return live;
+  } catch (_) {
+    return List<String>.from(AppConfig.chatZaiKnownModels);
+  }
+});
+
 /// Resolves to a [ZaiApiClient] using the current auth mode, captcha
 /// param, and (in guest mode) the active anonymous profile's guest
 /// token. Returns `null` if the user is not signed in at all.

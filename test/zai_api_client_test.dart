@@ -41,19 +41,21 @@ void main() {
 
     test('regular endpoint when agentMode is true but model is NOT agent-capable',
         () {
-      // `glm-4.7` is a regular chat model — agentMode=true has no effect.
+      // `glm-4.6v` is a vision-only chat model — agentMode=true has no
+      // effect because it's not in chatZaiAgentCapableModels.
       expect(
-        client.chatCompletionsPathFor(model: 'glm-4.7', agentMode: true),
+        client.chatCompletionsPathFor(model: 'glm-4.6v', agentMode: true),
         AppConfig.chatZaiChatCompletionsPath,
       );
     });
 
     test('falls back to default guest model when model is null', () {
-      // AppConfig.defaultGuestModel is 'glm-4.7' which is NOT agent-capable.
-      // So agentMode=true should still return the regular path.
+      // AppConfig.defaultGuestModel is 'glm-4.7' which IS agent-capable
+      // (added in the September 2026 update). So agentMode=true returns
+      // the agent path.
       expect(
         client.chatCompletionsPathFor(model: null, agentMode: true),
-        AppConfig.chatZaiChatCompletionsPath,
+        AppConfig.chatZaiAgentChatCompletionsPath,
       );
     });
   });
@@ -105,7 +107,12 @@ void main() {
       // Sanity-check that we didn't break the existing agent list.
       expect(AppConfig.isChatZaiAgentModel('x-preview-l'), isTrue);
       expect(AppConfig.isChatZaiAgentModel('deep-research'), isTrue);
-      expect(AppConfig.isChatZaiAgentModel('glm-4.7'), isFalse);
+      expect(AppConfig.isChatZaiAgentModel('0808-360B-DR'), isTrue);
+      // glm-4.7 was added in the September 2026 update.
+      expect(AppConfig.isChatZaiAgentModel('glm-4.7'), isTrue);
+      // Vision-only and small models not in the agent list.
+      expect(AppConfig.isChatZaiAgentModel('glm-4.6v'), isFalse);
+      expect(AppConfig.isChatZaiAgentModel('glm-4-flash'), isFalse);
     });
   });
 }
