@@ -12,7 +12,6 @@
 //   /prompts/:id      → PromptEditorScreen on existing prompt
 //   /settings         → SettingsScreen
 
-import 'dart:io' show stdout;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -92,20 +91,14 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
     redirect: (context, state) {
       final path = state.matchedLocation;
-      // ignore: avoid_print
-      stdout.writeln('[ROUTER] redirect: path=$path, auth.status=${auth.status}, '
-          'auth.signedIn=${auth.signedIn}, auth.mode=${auth.mode}');
-      if (auth.status == AuthStatus.loading || path == '/splash') return null;
-      if (!auth.signedIn && path != '/auth') {
-        // ignore: avoid_print
-        print('[ROUTER] -> redirecting to /auth');
-        return '/auth';
-      }
-      if (auth.signedIn && path == '/auth') {
-        // ignore: avoid_print
-        print('[ROUTER] -> redirecting to /');
-        return '/';
-      }
+      // Never redirect away from /splash — the splash screen handles
+      // its own navigation. This prevents the infinite loop where the
+      // router disposes the splash while restore() is still running.
+      if (path == '/splash') return null;
+      // While auth is loading, don't redirect — wait for restore().
+      if (auth.status == AuthStatus.loading) return null;
+      if (!auth.signedIn && path != '/auth') return '/auth';
+      if (auth.signedIn && path == '/auth') return '/';
       return null;
     },
   );
