@@ -1,13 +1,12 @@
 // App entry. Boots logging, prefs, secure storage, opens the database and
 // hands the Riverpod container over to [LagestroemiaApp].
 //
-// When the app starts, it prints a step-by-step log to the console
-// (stdout) so the user can see exactly what's happening and where it
-// might hang. This is critical for debugging the "stuck on loading"
-// issue on Windows/Android.
+// DEBUG: writes a step-by-step log to BOTH stdout (with flush) and a
+// file (lagestroemia_debug.log) so the user can see exactly what's
+// happening even if the console doesn't show output.
 
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, File, stdout, stderr, FileMode;
 
 import 'package:flutter/material.dart' show WidgetsFlutterBinding, MaterialApp;
 import 'package:flutter/widgets.dart';
@@ -21,29 +20,54 @@ import 'state/providers.dart';
 import 'state/settings_state.dart';
 import 'theme/app_theme.dart';
 
-/// Debug print that flushes immediately. On Windows, stdout is
-/// line-buffered by default so prints might not appear until the app
-/// exits. This forces a flush after each line.
-void debugPrint(String msg) {
-  // ignore: avoid_print
-  print('[LAGESTROEMIA] $msg');
+/// Debug log file path. On Windows: %TEMP%\lagestroemia_debug.log
+/// On Linux: /tmp/lagestroemia_debug.log
+String get _logPath {
+  try {
+    final dir = Platform.environment['TEMP'] ?? '/tmp';
+    return '$dir/lagestroemia_debug.log';
+  } catch (_) {
+    return '/tmp/lagestroemia_debug.log';
+  }
+}
+
+/// Writes a debug message to stdout (with flush) AND to a log file.
+/// On Windows, Flutter's print() doesn't flush stdout immediately,
+/// so we use stdout.write() + stdout.flush() to force it.
+void debugLog(String msg) {
+  final line = '[${DateTime.now().toIso8601String()}] $msg';
+  try {
+    stdout.writeln(line);
+    stdout.flush();
+  } catch (_) {}
+  try {
+    stderr.writeln(line);
+  } catch (_) {}
+  try {
+    final f = File(_logPath);
+    f.writeAsStringSync('$line\n', mode: FileMode.append);
+  } catch (_) {}
 }
 
 Future<void> main() async {
-  debugPrint('=== STARTING ===');
-  debugPrint('Platform: ${_platformInfo()}');
+  // Clear the debug log file at start
+  try { File(_logPath).writeAsStringSync(''); } catch (_) {}
 
-  debugPrint('1/6: Initializing Flutter binding...');
+  debugLog('=== LAGESTROEMIA STARTING ===');
+  debugLog('Platform: ${_platformInfo()}');
+  debugLog('Log file: $_logPath');
+
+  debugLog('1/6: Initializing Flutter binding...');
   WidgetsFlutterBinding.ensureInitialized();
 
-  debugPrint('2/6: Loading SharedPreferences...');
+  debugLog('2/6: Loading SharedPreferences...');
   final prefs = await SharedPreferences.getInstance();
-  debugPrint('  SharedPreferences loaded OK');
+  debugLog('  SharedPreferences loaded OK');
 
-  debugPrint('3/6: Initializing logger...');
+  debugLog('3/6: Initializing logger...');
   initAppLogger();
 
-  debugPrint('4/6: Creating ProviderScope...');
+  debugLog('4/6: Creating ProviderScope...');
   runApp(ProviderScope(
     overrides: <Override>[
       settingsStateProvider.overrideWith(
@@ -54,15 +78,12 @@ Future<void> main() async {
     child: const LagestroemiaApp(),
   ));
 
-  debugPrint('5/6: App started. Waiting for splash screen...');
+  debugLog('5/6: App started. Waiting for splash screen...');
 }
 
 String _platformInfo() {
-  // Use dart:io if available (native), otherwise web
   try {
-    // ignore: avoid_dynamic_calls
-    final platform = Platform.operatingSystem;
-    return '$platform ${Platform.operatingSystemVersion}';
+    return '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
   } catch (_) {
     return 'web';
   }

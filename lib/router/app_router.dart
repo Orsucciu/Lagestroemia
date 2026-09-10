@@ -12,6 +12,7 @@
 //   /prompts/:id      → PromptEditorScreen on existing prompt
 //   /settings         → SettingsScreen
 
+import 'dart:io' show stdout;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -92,7 +93,7 @@ final routerProvider = Provider<GoRouter>((ref) {
     redirect: (context, state) {
       final path = state.matchedLocation;
       // ignore: avoid_print
-      print('[ROUTER] redirect: path=$path, auth.status=${auth.status}, '
+      stdout.writeln('[ROUTER] redirect: path=$path, auth.status=${auth.status}, '
           'auth.signedIn=${auth.signedIn}, auth.mode=${auth.mode}');
       if (auth.status == AuthStatus.loading || path == '/splash') return null;
       if (!auth.signedIn && path != '/auth') {

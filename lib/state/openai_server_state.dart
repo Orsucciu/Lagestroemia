@@ -6,6 +6,7 @@
 
 import 'dart:io' show Platform;
 
+import 'dart:io' show Platform, File, stdout, stderr, FileMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -14,6 +15,18 @@ import '../data/api/openai_api_server.dart';
 import 'anon_profiles_state.dart';
 import 'auth_state.dart';
 import 'providers.dart';
+
+void _debugLog(String msg) {
+  final line = '[\${DateTime.now().toIso8601String()}] ' + msg;
+  try { stdout.writeln(line); stdout.flush(); } catch (_) {}
+  try {
+    final dir = Platform.environment['TEMP'] ?? '/tmp';
+    File('${dir}/lagestroemia_debug.log')
+        .writeAsStringSync('${line}\n', mode: FileMode.append);
+  } catch (_) {}
+}
+
+
 
 /// Keys for persistence in SharedPreferences.
 const String _kPrefEnabled = '${AppConfig.prefsPrefix}oai_server_enabled';
@@ -109,24 +122,24 @@ class OpenAiServerNotifier extends StateNotifier<OpenAiServerStatus> {
   /// Called from the splash screen or main(). Returns the new status.
   Future<OpenAiServerStatus> restoreIfEnabled() async {
     // ignore: avoid_print
-    print('[SERVER] restoreIfEnabled(): platform=${Platform.operatingSystem}');
+    _debugLog('[SERVER] restoreIfEnabled(): platform=${Platform.operatingSystem}');
     if (!Platform.isLinux && !Platform.isWindows && !Platform.isAndroid) {
       // ignore: avoid_print
-      print('[SERVER] restoreIfEnabled(): skipping (platform not supported)');
+      _debugLog('[SERVER] restoreIfEnabled(): skipping (platform not supported)');
       return const OpenAiServerStatus();
     }
     final cfg = loadConfig();
     // ignore: avoid_print
-    print('[SERVER] restoreIfEnabled(): enabled=${cfg.enabled}, port=${cfg.port}');
+    _debugLog('[SERVER] restoreIfEnabled(): enabled=${cfg.enabled}, port=${cfg.port}');
     if (!cfg.enabled) {
       return const OpenAiServerStatus();
     }
     // ignore: avoid_print
-    print('[SERVER] restoreIfEnabled(): starting server...');
+    _debugLog('[SERVER] restoreIfEnabled(): starting server...');
     final status = await _server.start(cfg);
     state = status;
     // ignore: avoid_print
-    print('[SERVER] restoreIfEnabled(): status running=${status.running}, error=${status.error}');
+    _debugLog('[SERVER] restoreIfEnabled(): status running=${status.running}, error=${status.error}');
     return status;
   }
 
