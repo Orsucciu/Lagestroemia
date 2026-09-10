@@ -15,6 +15,7 @@
 import 'dart:async';
 import 'dart:io' show Platform, File, stdout, stderr, FileMode;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -26,6 +27,8 @@ import '../../core/config/app_config.dart';
 
 void _debugLog(String msg) {
   final line = '[${DateTime.now().toIso8601String()}] $msg';
+  print(line);
+  if (kIsWeb) return;
   try { stdout.writeln(line); stdout.flush(); } catch (_) {}
   try { stderr.writeln(line); } catch (_) {}
   try {

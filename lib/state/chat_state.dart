@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:io' show Platform, File, stdout, stderr, FileMode;
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
@@ -24,6 +25,8 @@ const _uuid = Uuid();
 
 void _debugLog(String msg) {
   final line = '[${DateTime.now().toIso8601String()}] ' + msg;
+  print(line);
+  if (kIsWeb) return;
   try { stdout.writeln(line); stdout.flush(); } catch (_) {}
   try { stderr.writeln(line); } catch (_) {}
   try {

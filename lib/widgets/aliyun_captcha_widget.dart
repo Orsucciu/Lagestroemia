@@ -3,40 +3,32 @@
 // user solves the challenge.
 //
 // Platform support:
-//  - Android, iOS, Windows, Web: uses flutter_inappwebview (real
-//    webview rendering the AliyunCaptcha.js SDK)
-//  - Linux, macOS: shows a fallback message (flutter_inappwebview
-//    doesn't have a Linux/macOS implementation). The user can switch
-//    to API-key mode or solve the captcha in a browser and paste
-//    the captcha_verify_param manually.
+//  - Android, iOS, Windows: uses flutter_inappwebview (real webview
+//    rendering the AliyunCaptcha.js SDK)
+//  - Linux, macOS: shows a fallback message (flutter_inappwebview doesn't
+//    have a Linux/macOS implementation)
+//  - Web: shows a fallback message — flutter_inappwebview on web uses
+//    an iframe, which works for static content but the Aliyun captcha
+//    SDK uses postMessage to its parent window which doesn't route
+//    back through Flutter's iframe sandbox. The captcha would render
+//    but the `captcha_verify_param` callback would be lost. The user
+//    can switch to API-key mode (no captcha needed) or solve the
+//    captcha in a browser at chat.z.ai and paste the param manually.
 
 import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
 import '../core/config/app_config.dart';
 import 'aliyun_captcha_html.dart';
 
-// Conditional import: only import the webview file on platforms that
-// have flutter_inappwebview. On Linux/macOS, we use a stub.
-// The trick: Dart conditional imports use the same import path but
-// with different `if` conditions based on `dart.library.io` /
-// `dart.library.html` availability. However, since flutter_inappwebview
-// is available on all platforms as a pub package (it just doesn't have
-// a Linux implementation), we can't use conditional imports to avoid
-// the build error.
-//
-// Instead, we simply guard the flutter_inappwebview import behind a
-// runtime Platform check and never build the webview on Linux/macOS.
-// The import itself is fine (the package compiles) — it's the CMake
-// build that fails because there's no linux/ native code in the
-// plugin. To fix this, we need to exclude the plugin from the Linux
-// build. The easiest way: move the flutter_inappwebview import into
-// a separate file that is only compiled on supported platforms.
-
-// On Linux/macOS, we use a simple Text widget instead.
-// On Android/iOS/Windows/Web, we use the real webview.
+// On supported native platforms (Android/iOS/Windows) we use the real
+// webview from aliyun_captcha_webview.dart. We import it unconditionally
+// here — the package compiles on every platform; only the CMake build
+// step would fail on Linux/macOS, but those platforms take the fallback
+// branch and never call _buildWebview.
+import 'aliyun_captcha_webview.dart' show CaptchaWebviewImplReal;
 
 export 'aliyun_captcha_html.dart' show buildCaptchaHtmlForTest;
 export 'aliyun_captcha_dialog.dart' show CaptchaDialog;
@@ -56,64 +48,110 @@ class CaptchaWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (Platform.isLinux || Platform.isMacOS) {
-      return SizedBox(
+    // Web: flutter_inappwebview uses an iframe on web, which breaks the
+    // captcha SDK's postMessage callback. Show the fallback instead.
+    // Native Linux/macOS: no webview implementation available. Same fallback.
+    if (kIsWeb || Platform.isLinux || Platform.isMacOS) {
+      return _CaptchaFallback(
         height: height,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                const Icon(Icons.warning_amber, size: 40),
-                const SizedBox(height: 8),
-                Text(
-                  'Captcha widget not available on ${Platform.operatingSystem}.',
-                  style: Theme.of(context).textTheme.titleSmall,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'To use guest mode, switch to a browser to solve the '
-                  'captcha on chat.z.ai, then copy the captcha_verify_param '
-                  'and paste it into the app. Or switch to API-key mode in '
-                  'Settings (no captcha needed).',
-                  style: Theme.of(context).textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: () => onError?.call('not_available'),
-                  child: const Text('Enter captcha manually'),
-                ),
-              ],
-            ),
-          ),
-        ),
+        onSolved: onSolved,
+        onError: onError,
       );
     }
 
-    // On supported platforms, use the real webview.
-    // We import it here to keep the build working on Linux/macOS.
-    // The flutter_inappwebview package is in pubspec but only
-    // compiles on supported platforms.
-    return _buildWebview(context);
+    // On supported native platforms (Android/iOS/Windows), use the
+    // real webview which renders AliyunCaptcha.js and forwards the
+    // captcha_verify_param string back via JS interop.
+    return CaptchaWebviewImplReal(
+      onSolved: onSolved,
+      onError: onError,
+      height: height,
+    );
+  }
+}
+
+/// Fallback widget shown on platforms where the in-app webview is
+/// unavailable (Linux, macOS, Web). Tells the user to either:
+///   - switch to API-key mode (no captcha needed), OR
+///   - solve the captcha in a browser at chat.z.ai and paste the
+///     `captcha_verify_param` string into the manual entry field
+///     below.
+class _CaptchaFallback extends StatefulWidget {
+  const _CaptchaFallback({
+    required this.height,
+    required this.onSolved,
+    this.onError,
+  });
+  final double height;
+  final ValueChanged<String> onSolved;
+  final ValueChanged<String>? onError;
+
+  @override
+  State<_CaptchaFallback> createState() => _CaptchaFallbackState();
+}
+
+class _CaptchaFallbackState extends State<_CaptchaFallback> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
-  Widget _buildWebview(BuildContext context) {
-    // This method is only called on supported platforms (Android,
-    // iOS, Windows, Web). On Linux/macOS, the fallback above is
-    // returned instead.
-    // We can't directly import flutter_inappwebview here because
-    // the Linux CMake build would fail. Instead, the webview widget
-    // is built via an island that's only compiled on supported
-    // platforms.
-    // For now, return a simple placeholder — the real webview is
-    // wired up in aliyun_captcha_webview_impl.dart which is only
-    // imported on supported platforms.
+  @override
+  Widget build(BuildContext context) {
     return SizedBox(
-      height: height,
-      child: const Center(child: CircularProgressIndicator()),
+      height: widget.height,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Icon(Icons.warning_amber, size: 40),
+              const SizedBox(height: 8),
+              Text(
+                kIsWeb
+                    ? 'In-app captcha not available on Web.'
+                    : 'Captcha widget not available on ${Platform.operatingSystem}.',
+                style: Theme.of(context).textTheme.titleSmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Either switch to API-key mode in Settings (no captcha '
+                'needed), or open https://chat.z.ai in a browser, solve '
+                'the captcha there, then copy the captcha_verify_param '
+                'from your browser devtools (Network tab → /v2/chat/'
+                'completions request body) and paste it below.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _controller,
+                decoration: const InputDecoration(
+                  labelText: 'captcha_verify_param',
+                  hintText: 'Paste the captcha verify param here',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+              const SizedBox(height: 8),
+              FilledButton(
+                onPressed: () {
+                  final value = _controller.text.trim();
+                  if (value.isNotEmpty) {
+                    widget.onSolved(value);
+                  }
+                },
+                child: const Text('Use this param'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -9,10 +9,11 @@
 
 import 'dart:async';
 import 'dart:io' show Platform, File, stdout, stderr, FileMode;
-
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n/generated/app_localizations.dart';
@@ -33,8 +34,16 @@ String get _logPath {
   }
 }
 
+/// Writes a debug log line. On native platforms: writes to stdout, stderr,
+/// and appends to the log file at `$TEMP/lagestroemia_debug.log`. On web:
+/// only writes to the browser console via `print()` (the file system
+/// doesn't exist there, and `stdout`/`stderr`/`File` all throw).
 void debugLog(String msg) {
   final line = '[${DateTime.now().toIso8601String()}] $msg';
+  // Browser console — works on every platform.
+  print(line);
+  if (kIsWeb) return;
+  // File + stdout/stderr — native only.
   try { stdout.writeln(line); stdout.flush(); } catch (_) {}
   try { stderr.writeln(line); } catch (_) {}
   try {
@@ -44,7 +53,17 @@ void debugLog(String msg) {
 }
 
 Future<void> main() async {
-  try { File(_logPath).writeAsStringSync(''); } catch (_) {}
+  // Use path-based URLs on web (e.g. /auth instead of /#/auth).
+  // This prevents the "Could not navigate to initial route" warning
+  // that appears when the browser URL hash is out of sync with the
+  // go_router's initial location.
+  if (kIsWeb) {
+    usePathUrlStrategy();
+  }
+
+  if (!kIsWeb) {
+    try { File(_logPath).writeAsStringSync(''); } catch (_) {}
+  }
 
   debugLog('=== LAGESTROEMIA STARTING ===');
   debugLog('Platform: ${_platformInfo()}');
