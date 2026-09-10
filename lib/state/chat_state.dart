@@ -361,8 +361,13 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
 
     // Build OpenAI-shaped messages payload.
     final priorMessages = await msgRepo.listForChat(chatId);
+    // Note: use growable: true (the default) here so we can .add() the
+    // user message below. The previous `growable: false` made the list
+    // fixed-length, and `add()` threw `Unsupported operation: add` on
+    // the Web target (sqflite_common_ffi_web's JS arrays enforce
+    // fixed-length strictly, while native SQLite does not).
     final List<Map<String, Object?>> wirePayload =
-        priorMessages.map((m) => m.toWirePayload()).toList(growable: false);
+        priorMessages.map((m) => m.toWirePayload()).toList();
 
     // Compose content for the user message (plain text or multi-modal).
     final String userText = text.isEmpty ? '(no text)' : text;
