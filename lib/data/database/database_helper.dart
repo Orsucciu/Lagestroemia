@@ -212,21 +212,19 @@ class DatabaseHelper {
 
   /// Picks the right [DatabaseFactory] for the current platform.
   ///
-  /// This is called once. Web must use `databaseFactoryFfiWeb`; native uses
-  /// `databaseFactoryFfi`; Android uses the bundled sqflite plugin which is
-  /// the default `databaseFactory` global.
+  /// On ALL platforms we use `sqflite_common_ffi` — this requires
+  /// calling `sqfliteFfiInit()` before using the factory. On Android,
+  /// the default `databaseFactory` global is NOT automatically
+  /// initialized when using `sqflite_common_ffi`, so we must
+  /// explicitly use `databaseFactoryFfi` everywhere.
   DatabaseFactory _pickFactory() {
     if (PlatformInfo.isWeb) {
       return databaseFactoryFfiWeb;
     }
-    if (PlatformInfo.isLinux || PlatformInfo.isWindows || PlatformInfo.isMacOS) {
-      sqfliteFfiInit();
-      return databaseFactoryFfi;
-    }
-    // Android / iOS — let the bundled sqflite plugin decide.
-    // This branch is reached only when `dart:io` is available and the
-    // platform is mobile. The default global is already wired correctly.
-    return databaseFactory;
+    // All native platforms (Linux, Windows, macOS, Android, iOS):
+    // initialize the FFI and use the FFI factory.
+    sqfliteFfiInit();
+    return databaseFactoryFfi;
   }
 
   /// Resolves the absolute path of the SQLite file.

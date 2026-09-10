@@ -16,7 +16,7 @@ import '../core/config/app_config.dart';
 class SettingsState {
   const SettingsState({
     this.themeMode = ThemeMode.system,
-    this.localeTag,
+    this.localeTag = 'en',
     this.model = AppConfig.defaultModel,
     this.apiBaseUrl = AppConfig.defaultApiBaseUrl,
   });
