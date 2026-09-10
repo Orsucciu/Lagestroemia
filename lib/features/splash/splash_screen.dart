@@ -1,19 +1,16 @@
 // Splash screen with debug output.
 //
-// The splash screen handles the entire startup sequence (restore auth,
-// restore profiles, restore server) and then navigates to either the
-// chat list (if signed in) or the auth screen (if not).
-//
 // CRITICAL FIX: the previous version had a race condition where the
 // router redirect would fire while restore() was still running, causing
 // the splash widget to be disposed mid-restore, which threw
 // "Cannot use ref after the widget was disposed" and caused an infinite
 // loop of splash init → dispose → init → dispose.
 //
-// The fix: the splash screen is NOT a routed page. Instead, it's shown
-// as the initial route, and the router redirect explicitly skips
-// redirecting when on /splash. The splash screen itself handles all
-// navigation after restore() completes.
+// The fix: the splash screen captures all the provider notifiers it
+// needs BEFORE starting any async work. It then uses those captured
+// references instead of ref.read() — so even if the widget is disposed,
+// the notifiers still work (they're owned by the ProviderScope, not
+// the widget).
 
 import 'dart:async';
 import 'dart:io' show Platform, File, stdout, stderr, FileMode;
@@ -49,6 +46,12 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   String _statusText = 'Initializing...';
   bool _done = false;
 
+  // Capture provider containers so we can use them even after the
+  // widget is disposed (the ProviderScope outlives the widget).
+  late final AuthNotifier _authNotifier;
+  late final AnonProfilesNotifier _anonNotifier;
+  late final OpenAiServerNotifier _serverNotifier;
+
   void _setStatus(String s) {
     _statusText = s;
     _debugLog('[SPLASH] $s');
@@ -59,9 +62,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   void initState() {
     super.initState();
     _debugLog('[SPLASH] initState');
-    // Don't use addPostFrameCallback — run the startup directly.
-    // The post-frame callback was causing issues with the router
-    // redirect disposing the widget before the callback fired.
+
+    // Capture the notifiers NOW while we know ref is valid.
+    _authNotifier = ref.read(authStateProvider.notifier);
+    _anonNotifier = ref.read(anonProfilesProvider.notifier);
+    _serverNotifier = ref.read(openAiServerProvider.notifier);
+
+    // Start the startup sequence directly (no addPostFrameCallback).
     _runStartup();
   }
 
@@ -77,10 +84,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     // Step 1: restore auth
     _setStatus('1/4: Restoring auth...');
     try {
-      await ref
-          .read(authStateProvider.notifier)
-          .restore()
-          .timeout(const Duration(seconds: 5));
+      await _authNotifier.restore().timeout(const Duration(seconds: 5));
       _debugLog('[SPLASH] restore() completed');
     } on TimeoutException {
       _debugLog('[SPLASH] restore() TIMED OUT');
@@ -88,31 +92,19 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
       _debugLog('[SPLASH] restore() threw: $e');
     }
 
-    if (!mounted) {
-      _debugLog('[SPLASH] widget disposed after restore, aborting');
-      return;
-    }
-
     // Step 2: anon profiles
     _setStatus('2/4: Restoring profiles...');
     try {
-      await ref
-          .read(anonProfilesProvider.notifier)
-          .restore()
-          .timeout(const Duration(seconds: 3));
+      await _anonNotifier.restore().timeout(const Duration(seconds: 3));
     } catch (e) {
       _debugLog('[SPLASH] anonProfiles threw: $e');
     }
 
-    if (!mounted) return;
-
     // Step 3: OpenAI server
     _setStatus('3/4: Restoring server...');
     try {
-      await ref
-          .read(openAiServerProvider.notifier)
-          .restoreIfEnabled()
-          .timeout(const Duration(seconds: 3));
+      await _serverNotifier.restoreIfEnabled().timeout(
+          const Duration(seconds: 3));
     } catch (e) {
       _debugLog('[SPLASH] openAiServer threw: $e');
     }
@@ -122,13 +114,20 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   }
 
   void _navigate() {
-    if (_done || !mounted) return;
+    if (_done) return;
     _done = true;
     _fallbackTimer?.cancel();
 
-    final auth = ref.read(authStateProvider);
+    // Read the current auth state. We use the captured notifier's state
+    // instead of ref.read() to avoid "Cannot use ref after disposed".
+    final auth = _authNotifier.state;
     _debugLog('[SPLASH] navigating: signedIn=${auth.signedIn} '
         'mode=${auth.mode} status=${auth.status}');
+
+    if (!mounted) {
+      _debugLog('[SPLASH] widget disposed, cannot navigate');
+      return;
+    }
 
     if (auth.signedIn) {
       _debugLog('[SPLASH] -> / (chat list)');

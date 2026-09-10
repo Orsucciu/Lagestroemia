@@ -207,58 +207,63 @@ class AuthNotifier extends StateNotifier<AuthState> {
   ///    [AuthMode.guest].
   /// 3. If the guest fetch fails too, fall back to [AuthStatus.error].
   Future<void> restore() async {
-    // ignore: avoid_print
     _debugLog('[AUTH] restore() started');
-    state = state.copyWith(status: AuthStatus.loading);
+    // Don't set status to loading here — that triggers the router to
+    // rebuild, which can dispose the splash widget mid-restore. Instead,
+    // only set the final status when we're done.
     try {
-      // ignore: avoid_print
       _debugLog('[AUTH] restore(): reading API key from secure storage...');
       final key = await _secure.getApiKey().timeout(
         const Duration(seconds: 3), onTimeout: () {
-        // ignore: avoid_print
         _debugLog('[AUTH] restore(): getApiKey() TIMED OUT after 3s');
         return null;
       });
-      // ignore: avoid_print
       _debugLog('[AUTH] restore(): getApiKey() returned: ${key == null ? "null" : "key(${key.length} chars)"}');
       if (key != null && key.isNotEmpty) {
-        // ignore: avoid_print
         _debugLog('[AUTH] restore(): API key found, signing in');
-        state = AuthState(
+        _setAuthState(AuthState(
           mode: AuthMode.apiKey,
           apiKey: key,
           useJwtAuth: _prefs.getBool(_kPrefUseJwtAuth) ?? false,
           status: AuthStatus.signedIn,
-        );
+        ));
         return;
       }
-      // ignore: avoid_print
       _debugLog('[AUTH] restore(): no API key, fetching guest token...');
       final guest = await _fetchGuestToken();
       if (guest != null) {
-        // ignore: avoid_print
         _debugLog('[AUTH] restore(): guest token fetched OK');
-        state = AuthState(
+        _setAuthState(AuthState(
           mode: AuthMode.guest,
           guestToken: guest.token,
           guestUserId: guest.userId,
           status: AuthStatus.signedIn,
-        );
+        ));
       } else {
-        // ignore: avoid_print
         _debugLog('[AUTH] restore(): guest token fetch returned null');
-        state = const AuthState(status: AuthStatus.signedOut);
+        _setAuthState(const AuthState(status: AuthStatus.signedOut));
       }
     } catch (e) {
-      // ignore: avoid_print
       _debugLog('[AUTH] restore(): EXCEPTION: $e');
-      state = AuthState(
+      _setAuthState(AuthState(
         status: AuthStatus.error,
         lastError: e.toString(),
-      );
+      ));
     }
-    // ignore: avoid_print
     _debugLog('[AUTH] restore() finished, status=${state.status}, mode=${state.mode}');
+  }
+
+  /// Safely sets the auth state. Catches any errors from StateNotifier
+  /// listeners (e.g. the router rebuilding) so the restore() flow
+  /// doesn't crash.
+  void _setAuthState(AuthState newState) {
+    try {
+      state = newState;
+    } catch (e) {
+      _debugLog('[AUTH] _setAuthState: listener threw: $e (state still set)');
+      // The state is still set even if a listener throws — StateNotifier
+      // sets the state before notifying listeners.
+    }
   }
 
   /// Force guest mode (used by the auth screen's "Continue as guest" button
