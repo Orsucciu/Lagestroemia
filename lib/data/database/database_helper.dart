@@ -37,7 +37,7 @@ CREATE TABLE chats (
   title         TEXT NOT NULL,
   model         TEXT,
   system_prompt_id TEXT,
-  profile_id    TEXT,                     -- anon profile id (null = main account)
+  profile_id    TEXT,                     
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   archived      INTEGER NOT NULL DEFAULT 0
@@ -46,11 +46,11 @@ CREATE TABLE chats (
 CREATE TABLE messages (
   id            TEXT PRIMARY KEY,
   chat_id       TEXT NOT NULL,
-  role          TEXT NOT NULL,           -- 'user' | 'assistant' | 'tool' | 'system'
-  content       TEXT NOT NULL,           -- plain text for display
-  content_json  TEXT,                    -- JSON for multi-modal content (vision, files)
-  reasoning     TEXT,                    -- reasoning_content (GLM-4.6+) or NULL
-  tool_calls    TEXT,                    -- JSON array of tool_call objects
+  role          TEXT NOT NULL,           
+  content       TEXT NOT NULL,           
+  content_json  TEXT,                    
+  reasoning     TEXT,                    
+  tool_calls    TEXT,                    
   created_at    INTEGER NOT NULL,
   FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );
@@ -62,8 +62,8 @@ CREATE TABLE attachments (
   filename      TEXT NOT NULL,
   mime_type     TEXT NOT NULL,
   byte_size     INTEGER NOT NULL,
-  local_path    TEXT,                    -- absolute path under app data dir, or NULL
-  remote_id     TEXT,                    -- z.ai /paas/v4/files id, or NULL
+  local_path    TEXT,                    
+  remote_id     TEXT,                    
   created_at    INTEGER NOT NULL,
   FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
@@ -72,10 +72,10 @@ CREATE INDEX idx_attachments_message ON attachments(message_id);
 CREATE TABLE artifacts (
   id            TEXT PRIMARY KEY,
   message_id    TEXT NOT NULL,
-  kind          TEXT NOT NULL,           -- 'code' | 'markdown' | 'html' | 'svg' | 'json'
-  language      TEXT,                    -- for code: 'dart', 'python', ...
-  name          TEXT,                    -- user-visible title
-  body          TEXT NOT NULL,           -- the artifact content
+  kind          TEXT NOT NULL,           
+  language      TEXT,                    
+  name          TEXT,                    
+  body          TEXT NOT NULL,           
   created_at    INTEGER NOT NULL,
   FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
@@ -92,11 +92,11 @@ CREATE TABLE system_prompts (
 );
 
 CREATE TABLE accounts (
-  id            TEXT PRIMARY KEY,        -- 'default' for now; multi-account comes later
+  id            TEXT PRIMARY KEY,        
   label         TEXT NOT NULL,
   api_base_url  TEXT NOT NULL,
-  -- The API key itself is stored in OS secure storage, NOT here.
-  -- We only keep non-sensitive metadata.
+  
+  
   created_at    INTEGER NOT NULL,
   last_used_at  INTEGER
 );
@@ -296,21 +296,14 @@ class DatabaseHelper {
   }
 }
 
-/// Splits a multi-statement SQL string into individual statements, stripping
-/// comments and trailing whitespace.
+/// Splits a multi-statement SQL string into individual statements.
+/// The schema has NO SQL comments (they were removed to avoid
+/// parsing issues with sqflite_common_ffi on some platforms).
 List<String> _splitStatements(String sql) {
-  // Strip block comments.
-  final noBlocks = sql.replaceAll(RegExp(r'/\*.*?\*/', dotAll: true), '');
   final statements = <String>[];
-  for (final raw in noBlocks.split(';')) {
+  for (final raw in sql.split(';')) {
     final stripped = raw.trim();
-    // Skip line-comment-only fragments and empties.
-    final withoutLineComments = stripped
-        .split('\n')
-        .where((l) => !l.trimLeft().startsWith('--'))
-        .join('\n')
-        .trim();
-    if (withoutLineComments.isNotEmpty) statements.add(withoutLineComments);
+    if (stripped.isNotEmpty) statements.add(stripped);
   }
   return statements;
 }
