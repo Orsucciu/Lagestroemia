@@ -47,66 +47,29 @@ class ChatScreen extends ConsumerWidget {
         ? AppConfig.chatZaiKnownModels
         : AppConfig.knownModels;
 
+    // Currently-selected model (or the default for the active backend).
+    final currentModel = currentChat.valueOrNull?.model ??
+        (auth.mode == AuthMode.guest
+            ? AppConfig.defaultGuestModel
+            : AppConfig.defaultModel);
+
+    // Capabilities of the current model.
+    final isAgentCapable = auth.mode == AuthMode.guest
+        ? AppConfig.isChatZaiAgentModel(currentModel)
+        : AppConfig.isApiZaiAgentModel(currentModel);
+    final isDeepThinkCapable = auth.mode == AuthMode.guest
+        ? AppConfig.isChatZaiDeepThinkModel(currentModel)
+        : AppConfig.isApiZaiDeepThinkModel(currentModel);
+
+    final chat = currentChat.valueOrNull;
+    final agentModeOn = chat?.agentMode ?? false;
+    final deepThinkOn = chat?.deepThink ?? false;
+
     final scrollController = ScrollController();
     return Scaffold(
       appBar: AppBar(
         title: Text(currentChat.valueOrNull?.title ?? l.chatEmptyTitle),
         actions: <Widget>[
-          // Model picker
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.tune),
-            tooltip: l.chatModelPicker,
-            onSelected: (model) async {
-              final id = chatIdState;
-              if (id == null) return;
-              final repo = await ref.read(chatRepositoryProvider.future);
-              final chat = await repo.findById(id);
-              if (chat == null) return;
-              await repo.updateMeta(chat.copyWith(model: model));
-              ref.invalidate(currentChatProvider);
-            },
-            itemBuilder: (_) => <PopupMenuEntry<String>>[
-              for (final m in knownModels)
-                PopupMenuItem(
-                  value: m,
-                  child: Row(
-                    children: <Widget>[
-                      Expanded(child: Text(m)),
-                      if (AppConfig.isChatZaiAgentModel(m) &&
-                          auth.mode == AuthMode.guest)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color:
-                                Theme.of(context).colorScheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            'agent',
-                            style: Theme.of(context).textTheme.labelSmall,
-                          ),
-                        ),
-                      if (AppConfig.isApiZaiAgentModel(m) &&
-                          auth.mode == AuthMode.apiKey)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color:
-                                Theme.of(context).colorScheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            'agent',
-                            style: Theme.of(context).textTheme.labelSmall,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
           // Per-chat system prompt picker (issue #4)
           Consumer(builder: (context, ref2, _) {
             final promptsAsync = ref2.watch(_allPromptsForPickerProvider);
@@ -117,10 +80,10 @@ class ChatScreen extends ConsumerWidget {
                 final id = chatIdState;
                 if (id == null) return;
                 final repo = await ref.read(chatRepositoryProvider.future);
-                final chat = await repo.findById(id);
-                if (chat == null) return;
+                final c = await repo.findById(id);
+                if (c == null) return;
                 await repo.updateMeta(
-                  chat.copyWith(
+                  c.copyWith(
                       systemPromptId:
                           promptId == 'none' ? null : promptId),
                 );
@@ -172,6 +135,30 @@ class ChatScreen extends ConsumerWidget {
                 ],
               ),
             ),
+          // Mode bar: model picker + Chat/Agent toggle + Deep think toggle.
+          // These are separate toggles (issue: model picker UI bug). Each
+          // toggle is only enabled when the current model supports it.
+          _ModeBar(
+            knownModels: knownModels,
+            currentModel: currentModel,
+            onModelSelected: (model) async {
+              final id = chatIdState;
+              if (id == null) return;
+              final repo = await ref.read(chatRepositoryProvider.future);
+              final c = await repo.findById(id);
+              if (c == null) return;
+              await repo.updateMeta(c.copyWith(model: model));
+              ref.invalidate(currentChatProvider);
+            },
+            isAgentCapable: isAgentCapable,
+            agentModeOn: agentModeOn,
+            onAgentModeToggled: (v) =>
+                ref.read(chatComposerProvider.notifier).setAgentMode(v),
+            isDeepThinkCapable: isDeepThinkCapable,
+            deepThinkOn: deepThinkOn,
+            onDeepThinkToggled: (v) =>
+                ref.read(chatComposerProvider.notifier).setDeepThink(v),
+          ),
           if (composer.error != null)
             Padding(
               padding: const EdgeInsets.all(8),
@@ -341,6 +328,191 @@ final _allPromptsForPickerProvider = FutureProvider<List<SystemPrompt>>((ref) as
   final repo = await ref.watch(systemPromptRepositoryProvider.future);
   return repo.listAll();
 });
+
+/// Mode bar shown above the message list. Hosts three independent
+/// controls that previously were conflated inside the model picker:
+///
+///   1. The model picker (PopupMenuButton) — just shows model names,
+///      nothing else. The whole row of "model name + agent badge" was
+///      the bug the user reported.
+///   2. A "Chat / Agent" [Switch] — only enabled when the currently
+///      selected model is agent-capable. When on, send() routes the
+///      request through the agent endpoint.
+///   3. A "Deep think" [Switch] — only enabled when the currently
+///      selected model supports deep thinking. When on, send() adds
+///      `thinking: {type: enabled}` to the request body.
+///
+/// The switches are disabled (greyed out + unclickable) when the
+/// current model doesn't support the corresponding capability, instead
+/// of being hidden, so the user can see the option exists.
+class _ModeBar extends StatelessWidget {
+  const _ModeBar({
+    required this.knownModels,
+    required this.currentModel,
+    required this.onModelSelected,
+    required this.isAgentCapable,
+    required this.agentModeOn,
+    required this.onAgentModeToggled,
+    required this.isDeepThinkCapable,
+    required this.deepThinkOn,
+    required this.onDeepThinkToggled,
+  });
+
+  final List<String> knownModels;
+  final String currentModel;
+  final ValueChanged<String> onModelSelected;
+  final bool isAgentCapable;
+  final bool agentModeOn;
+  final ValueChanged<bool> onAgentModeToggled;
+  final bool isDeepThinkCapable;
+  final bool deepThinkOn;
+  final ValueChanged<bool> onDeepThinkToggled;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      color: theme.colorScheme.surfaceContainerLow,
+      child: Wrap(
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 8,
+        runSpacing: 4,
+        children: <Widget>[
+          // Model picker — clean, just the model name.
+          PopupMenuButton<String>(
+            tooltip: 'Select model',
+            onSelected: onModelSelected,
+            itemBuilder: (_) => <PopupMenuEntry<String>>[
+              for (final m in knownModels)
+                PopupMenuItem(
+                  value: m,
+                  child: Row(
+                    children: <Widget>[
+                      if (m == currentModel)
+                        const Icon(Icons.check, size: 18)
+                      else
+                        const SizedBox(width: 18),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(m)),
+                    ],
+                  ),
+                ),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Icon(Icons.tune, size: 18, color: theme.colorScheme.primary),
+                  const SizedBox(width: 6),
+                  Text(
+                    currentModel,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.arrow_drop_down, size: 18),
+                ],
+              ),
+            ),
+          ),
+          // Chat / Agent toggle.
+          _ToggleChip(
+            label: 'Agent',
+            icon: Icons.smart_toy_outlined,
+            enabled: isAgentCapable,
+            value: agentModeOn,
+            onChanged: onAgentModeToggled,
+            tooltip: isAgentCapable
+                ? 'Route requests through the agent endpoint for this model'
+                : 'This model does not support agent mode',
+          ),
+          // Deep think toggle.
+          _ToggleChip(
+            label: 'Deep think',
+            icon: Icons.psychology_outlined,
+            enabled: isDeepThinkCapable,
+            value: deepThinkOn,
+            onChanged: onDeepThinkToggled,
+            tooltip: isDeepThinkCapable
+                ? 'Stream the model\'s reasoning before its final answer'
+                : 'This model does not support deep thinking',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A compact, Material-3-styled toggle chip used inside the [_ModeBar].
+///
+/// Renders a labelled [FilterChip]-like affordance: an icon + a text
+/// label + a small [Switch]. When [enabled] is false, the entire chip
+/// is greyed out and the [Switch] is disabled. The chip's [tooltip]
+/// explains why it's disabled (or what it does when on).
+class _ToggleChip extends StatelessWidget {
+  const _ToggleChip({
+    required this.label,
+    required this.icon,
+    required this.enabled,
+    required this.value,
+    required this.onChanged,
+    required this.tooltip,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool enabled;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final fgColor = enabled
+        ? (value ? colorScheme.onPrimaryContainer : colorScheme.onSurface)
+        : colorScheme.onSurfaceVariant.withValues(alpha: 0.4);
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: enabled && value
+              ? colorScheme.primaryContainer
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(icon, size: 16, color: fgColor),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(color: fgColor),
+            ),
+            const SizedBox(width: 4),
+            SizedBox(
+              width: 28,
+              height: 18,
+              child: Switch(
+                value: value,
+                onChanged: enabled ? onChanged : null,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _CaptchaPrompt extends StatelessWidget {
   const _CaptchaPrompt({required this.onSolved});

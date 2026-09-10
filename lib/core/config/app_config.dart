@@ -221,6 +221,51 @@ class AppConfig {
   static bool isApiZaiAgentModel(String model) =>
       apiZaiAgentCapableModels.contains(model);
 
+  /// Models on chat.z.ai that support the "deep think" / reasoning
+  /// streaming feature. The response includes a `reasoning_content`
+  /// field in the streamed delta. Source: chat.z.ai `GET /api/models`
+  /// — selected entries that report `thinking: true` or
+  /// `reasoning_content` capability in their `meta.capabilities`.
+  ///
+  /// When the user picks one of these models, the chat screen shows a
+  /// "Deep think" toggle that, when on, adds
+  /// `thinking: {type: enabled}` to the request body.
+  static const List<String> chatZaiDeepThinkCapableModels = <String>[
+    'glm-4.7',
+    'glm-5.3',
+    'glm-5.2',
+    'GLM-5-Turbo',
+    'GLM-5v-Turbo',
+    'x-preview-l',
+    'deep-research',
+    'zero',
+    '0727-106B-API',
+    '0727-360B-API',
+  ];
+
+  /// Models on api.z.ai (paid, API-key mode) that support the
+  /// `thinking` request parameter (which makes the model emit
+  /// reasoning before the final answer). Source: docs.z.ai model list.
+  static const List<String> apiZaiDeepThinkCapableModels = <String>[
+    'glm-4.6',
+    'glm-4.7',
+    'glm-4.5',
+    'glm-4.5-air',
+    'glm-5.3',
+    'glm-5.2',
+    'glm-5.1',
+  ];
+
+  /// Returns `true` if the given model id is in
+  /// [chatZaiDeepThinkCapableModels].
+  static bool isChatZaiDeepThinkModel(String model) =>
+      chatZaiDeepThinkCapableModels.contains(model);
+
+  /// Returns `true` if the given model id is in
+  /// [apiZaiDeepThinkCapableModels].
+  static bool isApiZaiDeepThinkModel(String model) =>
+      apiZaiDeepThinkCapableModels.contains(model);
+
   // ---- Aliyun captcha (used in guest mode before the first chat) ------
 
   /// Aliyun captcha SDK URL. Loaded lazily into the in-app webview that

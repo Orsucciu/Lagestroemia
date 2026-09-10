@@ -37,7 +37,9 @@ CREATE TABLE chats (
   title         TEXT NOT NULL,
   model         TEXT,
   system_prompt_id TEXT,
-  profile_id    TEXT,                     
+  profile_id    TEXT,
+  agent_mode    INTEGER NOT NULL DEFAULT 0,
+  deep_think    INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   archived      INTEGER NOT NULL DEFAULT 0
@@ -108,12 +110,20 @@ CREATE TABLE kv (
 ''';
 
 /// Latest schema version. Bump this whenever `_schemaVN` is extended.
-const int _latestVersion = 2;
+const int _latestVersion = 3;
 
 /// Migration from v1 to v2: add `profile_id` column to the chats
 /// table (for anonymous tab isolation).
 const String _migrateV1toV2 = '''
 ALTER TABLE chats ADD COLUMN profile_id TEXT;
+''';
+
+/// Migration from v2 to v3: add `agent_mode` and `deep_think` columns
+/// to the chats table. Both default to 0 (off). They are per-chat
+/// toggles — see the Chat model docstring for details.
+const String _migrateV2toV3 = '''
+ALTER TABLE chats ADD COLUMN agent_mode INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chats ADD COLUMN deep_think INTEGER NOT NULL DEFAULT 0;
 ''';
 
 /// Thrown by [DatabaseHelper] for unrecoverable failures.
@@ -200,6 +210,13 @@ class DatabaseHelper {
             if (v == 2) {
               _log.info('Migrating to v2: add profile_id column to chats');
               for (final stmt in _splitStatements(_migrateV1toV2)) {
+                await db.execute(stmt);
+              }
+            }
+            if (v == 3) {
+              _log.info(
+                  'Migrating to v3: add agent_mode + deep_think columns to chats');
+              for (final stmt in _splitStatements(_migrateV2toV3)) {
                 await db.execute(stmt);
               }
             }

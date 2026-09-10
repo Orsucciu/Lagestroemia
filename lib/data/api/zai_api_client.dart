@@ -145,22 +145,24 @@ class ZaiApiClient {
   /// Returns the active backend.
   ApiBackend get backend => _backend;
 
-  /// Returns the chat completions path for the active backend, picking
-  /// the **agent** path if [model] is agent-capable on the active
-  /// backend.
+  /// Returns the chat completions path for the active backend.
   ///
-  /// On chat.z.ai (guest mode), some models report `agent_mode: true`
-  /// in their `meta.capabilities`. Those go through
-  /// `/api/agent/v2/chat/completions` instead of `/api/v2/chat/completions`.
-  /// The SSE envelope is identical; only the URL prefix differs.
+  /// On **chat.z.ai** (guest mode), when [agentMode] is true AND the
+  /// [model] is in [AppConfig.chatZaiAgentCapableModels], the request
+  /// goes through `/api/agent/v2/chat/completions` (the agent endpoint
+  /// with the same SSE envelope as the regular chat endpoint). When
+  /// [agentMode] is false, the regular `/api/v2/chat/completions`
+  /// endpoint is used regardless of whether the model is
+  /// agent-capable.
   ///
-  /// On api.z.ai (paid mode), the public agent API at `/v1/agents` has
-  /// a different request shape — callers should use [agentRequest]
-  /// instead of [chatCompletionStream] for those.
-  String chatCompletionsPathFor({String? model}) {
+  /// On **api.z.ai** (paid mode), the public agent API at `/v1/agents`
+  /// has a different request shape — callers should use [agentRequest]
+  /// instead of [chatCompletionStream] for those. The regular
+  /// `/chat/completions` endpoint is always used here.
+  String chatCompletionsPathFor({String? model, bool agentMode = false}) {
     if (_backend == ApiBackend.chatZai) {
       final m = model ?? AppConfig.defaultGuestModel;
-      return AppConfig.isChatZaiAgentModel(m)
+      return (agentMode && AppConfig.isChatZaiAgentModel(m))
           ? AppConfig.chatZaiAgentChatCompletionsPath
           : AppConfig.chatZaiChatCompletionsPath;
     }
@@ -189,9 +191,14 @@ class ZaiApiClient {
   /// [messages] is the OpenAI-shaped list of message objects. [model]
   /// defaults to [AppConfig.defaultModel]. Other optional fields are
   /// forwarded as-is.
+  ///
+  /// When [agentMode] is true (and the [model] is agent-capable on the
+  /// active backend), the request goes through the agent endpoint
+  /// instead of the regular chat endpoint.
   Future<Result<AssistantResponse, ApiError>> chatCompletion({
     required List<Map<String, Object?>> messages,
     String? model,
+    bool agentMode = false,
     double? temperature,
     int? maxTokens,
     List<String>? stop,
@@ -221,7 +228,7 @@ class ZaiApiClient {
 
     try {
       final response = await _dio.post<dynamic>(
-        chatCompletionsPathFor(model: model),
+        chatCompletionsPathFor(model: model, agentMode: agentMode),
         data: jsonEncode(body),
       );
       final data = response.data;
@@ -238,9 +245,14 @@ class ZaiApiClient {
   ///
   /// Yields [ChatStreamChunk]s as they arrive over the SSE connection. The
   /// stream closes after the `[DONE]` sentinel.
+  ///
+  /// When [agentMode] is true (and the [model] is agent-capable on the
+  /// active backend), the request goes through the agent endpoint
+  /// instead of the regular chat endpoint.
   Stream<ChatStreamChunk> chatCompletionStream({
     required List<Map<String, Object?>> messages,
     String? model,
+    bool agentMode = false,
     double? temperature,
     int? maxTokens,
     List<String>? stop,
@@ -272,7 +284,7 @@ class ZaiApiClient {
     Response<ResponseBody> response;
     try {
       response = await _dio.post<ResponseBody>(
-        chatCompletionsPathFor(model: model),
+        chatCompletionsPathFor(model: model, agentMode: agentMode),
         data: jsonEncode(body),
         cancelToken: cancelToken,
         options: Options(

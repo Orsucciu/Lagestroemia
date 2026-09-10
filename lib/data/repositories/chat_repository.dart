@@ -67,7 +67,8 @@ class ChatRepository {
   }
 
   /// Updates only `title`, `model`, `system_prompt_id`, `archived`,
-  /// `updated_at`. Faster than [upsert] for the common "rename" case.
+  /// `agent_mode`, `deep_think`, `updated_at`. Faster than [upsert] for the
+  /// common "rename" case.
   Future<void> updateMeta(Chat chat) async {
     await _db.update(
       'chats',
@@ -76,6 +77,8 @@ class ChatRepository {
         'model': chat.model,
         'system_prompt_id': chat.systemPromptId,
         'archived': chat.archived ? 1 : 0,
+        'agent_mode': chat.agentMode ? 1 : 0,
+        'deep_think': chat.deepThink ? 1 : 0,
         'updated_at': chat.updatedAt.millisecondsSinceEpoch,
       },
       where: 'id = ?',

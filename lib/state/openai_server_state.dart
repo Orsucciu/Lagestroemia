@@ -17,7 +17,7 @@ import 'auth_state.dart';
 import 'providers.dart';
 
 void _debugLog(String msg) {
-  final line = '[\${DateTime.now().toIso8601String()}] ' + msg;
+  final line = '[${DateTime.now().toIso8601String()}] ' + msg;
   try { stdout.writeln(line); stdout.flush(); } catch (_) {}
   try {
     final dir = Platform.environment['TEMP'] ?? '/tmp';

@@ -8,19 +8,30 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform, File, stdout, stderr, FileMode;
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/config/app_config.dart';
-import '../data/api/zai_api_client.dart';
 import '../data/models/models.dart';
 import '../state/anon_profiles_state.dart';
 import '../state/auth_state.dart' show AuthMode;
 import 'providers.dart';
 
 const _uuid = Uuid();
+
+void _debugLog(String msg) {
+  final line = '[${DateTime.now().toIso8601String()}] ' + msg;
+  try { stdout.writeln(line); stdout.flush(); } catch (_) {}
+  try { stderr.writeln(line); } catch (_) {}
+  try {
+    final dir = Platform.environment['TEMP'] ?? '/tmp';
+    File('${dir}/lagestroemia_debug.log')
+        .writeAsStringSync('${line}\n', mode: FileMode.append);
+  } catch (_) {}
+}
 
 // ---- chat list ----------------------------------------------------------
 
@@ -213,6 +224,40 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     state = state.copyWith(input: value);
   }
 
+  /// Toggles the per-chat `agentMode` flag and persists it to the database.
+  /// The UI should only call this when the current model is agent-capable
+  /// (otherwise the toggle is disabled).
+  Future<void> setAgentMode(bool value) async {
+    final chatId = _ref.read(currentChatIdProvider);
+    if (chatId == null) return;
+    final chatRepo = await _ref.read(chatRepositoryProvider.future);
+    final chat = await chatRepo.findById(chatId);
+    if (chat == null) return;
+    final updated = chat.copyWith(
+      agentMode: value,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    await chatRepo.updateMeta(updated);
+    _ref.invalidate(currentChatProvider);
+  }
+
+  /// Toggles the per-chat `deepThink` flag and persists it to the database.
+  /// The UI should only call this when the current model supports deep
+  /// thinking (otherwise the toggle is disabled).
+  Future<void> setDeepThink(bool value) async {
+    final chatId = _ref.read(currentChatIdProvider);
+    if (chatId == null) return;
+    final chatRepo = await _ref.read(chatRepositoryProvider.future);
+    final chat = await chatRepo.findById(chatId);
+    if (chat == null) return;
+    final updated = chat.copyWith(
+      deepThink: value,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    await chatRepo.updateMeta(updated);
+    _ref.invalidate(currentChatProvider);
+  }
+
   void attachFile(AttachedFile file) {
     state = state.copyWith(attachedFiles: [...state.attachedFiles, file]);
   }
@@ -254,9 +299,17 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
   _StashedSend? _stashedSend;
 
   Future<void> send() async {
-    if (state.streaming || state.isSending) return;
+    _debugLog('[CHAT] send() called');
+    if (state.streaming || state.isSending) {
+      _debugLog('[CHAT] send(): already streaming/sending — ignoring');
+      return;
+    }
     final text = state.input.trim();
-    if (text.isEmpty && state.attachedFiles.isEmpty) return;
+    if (text.isEmpty && state.attachedFiles.isEmpty) {
+      _debugLog('[CHAT] send(): empty input + no attachments — ignoring');
+      return;
+    }
+    _debugLog('[CHAT] send(): text length=${text.length}, attachments=${state.attachedFiles.length}');
     state = state.copyWith(
       input: '',
       isSending: true,
@@ -269,6 +322,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
 
     final client = _ref.read(apiClientProvider);
     if (client == null) {
+      _debugLog('[CHAT] send(): apiClient is null — not signed in');
       state = state.copyWith(
         isSending: false,
         streaming: false,
@@ -288,6 +342,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     _ref.read(currentChatIdProvider.notifier).state = chatId;
     final chat = await chatRepo.findById(chatId);
     if (chat == null) {
+      _debugLog('[CHAT] send(): chat $chatId not found');
       state = state.copyWith(
         isSending: false,
         streaming: false,
@@ -299,6 +354,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
         ? AppConfig.defaultGuestModel
         : settings.model;
     final model = chat.model ?? defaultModel;
+    _debugLog('[CHAT] send(): model=$model, agentMode=${chat.agentMode}, deepThink=${chat.deepThink}');
 
     // Build OpenAI-shaped messages payload.
     final priorMessages = await msgRepo.listForChat(chatId);
@@ -369,6 +425,23 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     );
     await msgRepo.upsert(assistant);
 
+    // Build the thinking parameter: only enabled when the chat's
+    // deepThink toggle is on AND the current model supports it.
+    Map<String, Object?>? thinkingParam;
+    if (chat.deepThink) {
+      final isDeepThinkCapable = auth.mode == AuthMode.guest
+          ? AppConfig.isChatZaiDeepThinkModel(model)
+          : AppConfig.isApiZaiDeepThinkModel(model);
+      if (isDeepThinkCapable) {
+        thinkingParam = <String, Object?>{'type': 'enabled'};
+        _debugLog('[CHAT] send(): deep think enabled for model=$model');
+      } else {
+        _debugLog('[CHAT] send(): deepThink is on but model=$model does not support it — ignoring');
+      }
+    }
+
+    _debugLog('[CHAT] send(): starting stream to ${client.chatCompletionsPathFor(model: model, agentMode: chat.agentMode)}');
+
     // Stream with auto-retry!
     int retryAttempt = 0;
     const maxRetries = 5;
@@ -381,6 +454,8 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
       final stream = client.chatCompletionStream(
         messages: wirePayload,
         model: model,
+        agentMode: chat.agentMode,
+        thinking: thinkingParam,
         cancelToken: _cancelToken,
       );
       final buf = StringBuffer();
@@ -394,10 +469,12 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
         if (chunk.error != null) {
           final code = chunk.error!.code;
           final msg = chunk.error!.message;
+          _debugLog('[CHAT] send(): stream error kind=${chunk.error!.kind} code=$code msg=$msg');
           final isCaptcha =
               code == 'FRONTEND_CAPTCHA_REQUIRED' ||
               msg.toLowerCase().contains('captcha');
           if (isCaptcha) {
+            _debugLog('[CHAT] send(): captcha required — stashing input for retry');
             _stashedSend = _StashedSend(
               input: text,
               attachedFiles: state.attachedFiles);
@@ -421,11 +498,13 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
                kind == ApiErrorKind.rateLimit ||
                kind == ApiErrorKind.quota ||
                kind == ApiErrorKind.network)) {
+            _debugLog('[CHAT] send(): retryable error (attempt ${retryAttempt + 1}/$maxRetries)');
             shouldRetry = true;
             retryError = chunk.error;
             break;
           }
           // Non-retryable error — show it.
+          _debugLog('[CHAT] send(): non-retryable error — surfacing to UI');
           state = state.copyWith(
             streaming: false,
             isSending: false,
@@ -436,6 +515,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
           return;
         }
         if (chunk.finishReason == 'cancelled') {
+          _debugLog('[CHAT] send(): stream cancelled by user');
           cancelled = true;
           break;
         }
@@ -498,8 +578,10 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     );
     _ref.invalidate(currentChatMessagesProvider);
     _ref.invalidate(chatListProvider);
+    _debugLog('[CHAT] send(): finished (success=$success, cancelled=$cancelled, finishReason=$finishReason)');
 
     if (!cancelled && !success && finishReason == 'error') {
+      _debugLog('[CHAT] send(): stream ended with error');
       state = state.copyWith(error: const ApiError(
         message: 'Stream ended with an error. See logs.',
         kind: ApiErrorKind.unknown,

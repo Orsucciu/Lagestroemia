@@ -12,6 +12,8 @@ class Chat {
     required this.createdAt,
     required this.updatedAt,
     this.archived = false,
+    this.agentMode = false,
+    this.deepThink = false,
   });
 
   /// UUID (v4) generated client-side.
@@ -41,6 +43,22 @@ class Chat {
   /// Archived chats are hidden from the main list.
   final bool archived;
 
+  /// Per-chat toggle: when true, chat completions go through the agent
+  /// endpoint (`/api/agent/v2/chat/completions` on chat.z.ai or the
+  /// public agent API on api.z.ai) instead of the regular chat endpoint.
+  /// Only meaningful when the current [model] is agent-capable
+  /// (see [AppConfig.chatZaiAgentCapableModels] /
+  /// [AppConfig.apiZaiAgentCapableModels]).
+  final bool agentMode;
+
+  /// Per-chat toggle: when true, the request body includes
+  /// `thinking: {type: enabled}` so the model streams its reasoning
+  /// before the final answer. Only meaningful when the current [model]
+  /// supports deep thinking (see
+  /// [AppConfig.chatZaiDeepThinkCapableModels] /
+  /// [AppConfig.apiZaiDeepThinkCapableModels]).
+  final bool deepThink;
+
   /// Returns a copy of this chat with the given fields replaced.
   Chat copyWith({
     String? id,
@@ -51,6 +69,8 @@ class Chat {
     DateTime? createdAt,
     DateTime? updatedAt,
     bool? archived,
+    bool? agentMode,
+    bool? deepThink,
   }) {
     return Chat(
       id: id ?? this.id,
@@ -65,6 +85,8 @@ class Chat {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       archived: archived ?? this.archived,
+      agentMode: agentMode ?? this.agentMode,
+      deepThink: deepThink ?? this.deepThink,
     );
   }
 
@@ -78,6 +100,8 @@ class Chat {
       createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at']! as int),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(row['updated_at']! as int),
       archived: (row['archived'] as int?) == 1,
+      agentMode: (row['agent_mode'] as int?) == 1,
+      deepThink: (row['deep_think'] as int?) == 1,
     );
   }
 
@@ -90,6 +114,8 @@ class Chat {
         'created_at': createdAt.millisecondsSinceEpoch,
         'updated_at': updatedAt.millisecondsSinceEpoch,
         'archived': archived ? 1 : 0,
+        'agent_mode': agentMode ? 1 : 0,
+        'deep_think': deepThink ? 1 : 0,
       };
 
   @override
@@ -103,7 +129,9 @@ class Chat {
           other.profileId == profileId &&
           other.createdAt == createdAt &&
           other.updatedAt == updatedAt &&
-          other.archived == archived);
+          other.archived == archived &&
+          other.agentMode == agentMode &&
+          other.deepThink == deepThink);
 
   @override
   int get hashCode => Object.hash(
@@ -115,6 +143,8 @@ class Chat {
         createdAt,
         updatedAt,
         archived,
+        agentMode,
+        deepThink,
       );
 }
 

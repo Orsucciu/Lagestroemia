@@ -100,13 +100,15 @@ void main() {
     // The agent-mode endpoint has the same shape as the regular
     // /api/v2/chat/completions endpoint — same SSE envelope, same
     // captcha requirement. The only difference is the URL prefix.
-    // We pick `deep-research` which is an agent-capable model on
-    // chat.z.ai, so the client should route to the agent path.
+    // We pick `x-preview-l` which is an agent-capable model on
+    // chat.z.ai and explicitly set agentMode: true so the client
+    // routes to the agent path.
     final stream = client.chatCompletionStream(
       messages: <Map<String, Object?>>[
         <String, Object?>{'role': 'user', 'content': 'ping'},
       ],
       model: 'x-preview-l', // GLM-5.3-Flash, agent-capable, guest-available
+      agentMode: true,
     );
     final chunks = <ChatStreamChunk>[];
     await for (final chunk in stream) {

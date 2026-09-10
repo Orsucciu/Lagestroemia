@@ -17,7 +17,7 @@ void main() {
     db = await databaseFactoryFfi.openDatabase(
       ':memory:',
       options: OpenDatabaseOptions(
-        version: 2,
+        version: 3,
         onCreate: (db, version) async {
           await db.execute('''
 CREATE TABLE chats (
@@ -26,6 +26,8 @@ CREATE TABLE chats (
   model         TEXT,
   system_prompt_id TEXT,
   profile_id    TEXT,
+  agent_mode    INTEGER NOT NULL DEFAULT 0,
+  deep_think    INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   archived      INTEGER NOT NULL DEFAULT 0
@@ -221,5 +223,59 @@ CREATE TABLE kv (
     cols = await db2.rawQuery('PRAGMA table_info(chats)');
     expect(cols.any((c) => c['name'] == 'profile_id'), isTrue);
     await db2.close();
+  });
+
+  test('Schema v3 migration adds agent_mode + deep_think columns', () async {
+    // Create a v2 database (no agent_mode / deep_think)
+    final db2 = await databaseFactoryFfi.openDatabase(
+      'test-migration-v3.db',
+      options: OpenDatabaseOptions(
+        version: 2,
+        onCreate: (db, v) async {
+          await db.execute('CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT NOT NULL, model TEXT, system_prompt_id TEXT, profile_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0)');
+          await db.execute('CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, content_json TEXT, reasoning TEXT, tool_calls TEXT, created_at INTEGER NOT NULL, FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE)');
+        },
+      ),
+    );
+    var cols = await db2.rawQuery('PRAGMA table_info(chats)');
+    expect(cols.any((c) => c['name'] == 'agent_mode'), isFalse);
+    expect(cols.any((c) => c['name'] == 'deep_think'), isFalse);
+    await db2.close();
+
+    // Reopen with v3 (migration)
+    final db3 = await databaseFactoryFfi.openDatabase(
+      'test-migration-v3.db',
+      options: OpenDatabaseOptions(
+        version: 3,
+        onUpgrade: (db, oldV, newV) async {
+          if (newV >= 3) {
+            await db.execute(
+                'ALTER TABLE chats ADD COLUMN agent_mode INTEGER NOT NULL DEFAULT 0');
+            await db.execute(
+                'ALTER TABLE chats ADD COLUMN deep_think INTEGER NOT NULL DEFAULT 0');
+          }
+        },
+      ),
+    );
+    cols = await db3.rawQuery('PRAGMA table_info(chats)');
+    expect(cols.any((c) => c['name'] == 'agent_mode'), isTrue);
+    expect(cols.any((c) => c['name'] == 'deep_think'), isTrue);
+
+    // Existing rows should default to 0 (off).
+    await db3.insert('chats', {
+      'id': 'r1',
+      'title': 'r1',
+      'created_at': 1,
+      'updated_at': 1,
+      'archived': 0,
+    });
+    final rows = await db3.query('chats', where: 'id = ?', whereArgs: ['r1']);
+    expect(rows.first['agent_mode'], 0);
+    expect(rows.first['deep_think'], 0);
+
+    await db3.close();
+    try { File('.dart_tool/sqflite_common_ffi/databases/test-migration-v3.db').deleteSync(); } catch (_) {}
+    try { File('.dart_tool/sqflite_common_ffi/databases/test-migration-v3.db-journal').deleteSync(); } catch (_) {}
+    try { File('.dart_tool/sqflite_common_ffi/databases/test-migration-v3.db-wal').deleteSync(); } catch (_) {}
   });
 }
