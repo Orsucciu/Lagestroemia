@@ -1,12 +1,19 @@
 // App router (go_router).
 //
+// The splash screen is NOT a route — it's shown directly by the root
+// widget (LagestroemiaApp in main.dart) during startup. The router
+// only activates after startup is complete. This eliminates the race
+// condition where the router disposes the splash while restore() is
+// still running.
+//
 // Layout:
-//   /                  → ChatShell (scaffold + nav rail + current screen)
 //   /auth              → AuthScreen (first-run API key entry)
+//   /                  → ChatShell (scaffold + nav rail + current screen)
 //   /chat/:id          → ChatScreen opened on chat `id`
 //   /chat/new         → ChatScreen on a fresh chat
 //   /library          → LibraryScreen
 //   /library/artifacts → ArtifactsLibraryScreen
+//   /library/files    → FilesLibraryScreen
 //   /prompts          → PromptsScreen
 //   /prompts/new      → PromptEditorScreen
 //   /prompts/:id      → PromptEditorScreen on existing prompt
@@ -25,18 +32,14 @@ import '../features/library/files_library_screen.dart';
 import '../features/prompts/prompts_screen.dart';
 import '../features/prompts/prompt_editor_screen.dart';
 import '../features/settings/settings_screen.dart';
-import '../features/splash/splash_screen.dart';
 import '../state/auth_state.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   final auth = ref.watch(authStateProvider);
   return GoRouter(
-    initialLocation: '/splash',
+    // Start at the root — if not signed in, the redirect sends to /auth.
+    initialLocation: '/',
     routes: <RouteBase>[
-      GoRoute(
-        path: '/splash',
-        builder: (_, __) => const SplashScreen(),
-      ),
       GoRoute(
         path: '/auth',
         builder: (_, __) => const AuthScreen(),
@@ -91,12 +94,6 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
     redirect: (context, state) {
       final path = state.matchedLocation;
-      // Never redirect away from /splash — the splash screen handles
-      // its own navigation. This prevents the infinite loop where the
-      // router disposes the splash while restore() is still running.
-      if (path == '/splash') return null;
-      // While auth is loading, don't redirect — wait for restore().
-      if (auth.status == AuthStatus.loading) return null;
       if (!auth.signedIn && path != '/auth') return '/auth';
       if (auth.signedIn && path == '/auth') return '/';
       return null;
