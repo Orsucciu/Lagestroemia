@@ -498,9 +498,31 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
             _ref.invalidate(currentChatMessagesProvider);
             return;
           }
+          // Upgrade 403 "Model not available for current user level"
+          // (chat.z.ai's response when a guest user picks a flagship
+          // model like glm-5.3) to a specific error kind so the UI
+          // can show a helpful message instead of the generic auth
+          // error.
+          final original = chunk.error!;
+          final msgLower = msg.toLowerCase();
+          final isModelNotAllowed =
+              (code == '403' || original.httpStatus == 403) &&
+              (msgLower.contains('not available') ||
+                  msgLower.contains('user level') ||
+                  msgLower.contains('permission') ||
+                  msgLower.contains('insufficient'));
+          final effectiveError = isModelNotAllowed
+              ? ApiError(
+                  message: msg,
+                  code: code,
+                  httpStatus: original.httpStatus,
+                  kind: ApiErrorKind.modelNotAllowed,
+                  cause: original.cause,
+                )
+              : original;
           // Check if the error is retryable (server overload, quota,
           // rate limit, network).
-          final kind = chunk.error!.kind;
+          final kind = effectiveError.kind;
           if (retryAttempt < maxRetries &&
               (kind == ApiErrorKind.server ||
                kind == ApiErrorKind.rateLimit ||
@@ -508,7 +530,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
                kind == ApiErrorKind.network)) {
             _debugLog('[CHAT] send(): retryable error (attempt ${retryAttempt + 1}/$maxRetries)');
             shouldRetry = true;
-            retryError = chunk.error;
+            retryError = effectiveError;
             break;
           }
           // Non-retryable error — show it.
@@ -516,7 +538,7 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
           state = state.copyWith(
             streaming: false,
             isSending: false,
-            error: chunk.error,
+            error: effectiveError,
             autoRetryAttempt: 0,
             autoRetryNextDelaySecs: 0,
           );
@@ -535,6 +557,11 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
           content: buf.toString(),
           reasoning: reasoningBuf.toString(),
         );
+        // Invalidate the messages provider so the message bubble
+        // re-renders with the latest streamed text. Without this the
+        // UI only updates once at the end of the stream, so the user
+        // sees nothing during streaming.
+        _ref.invalidate(currentChatMessagesProvider);
         state = state.copyWith(
           streamedText: buf.toString(),
           streamedReasoning: reasoningBuf.toString(),
@@ -752,6 +779,81 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
       autoRetryAttempt: 0,
       autoRetryNextDelaySecs: 0,
     );
+  }
+
+  /// Regenerates the assistant response for the given message id.
+  ///
+  /// Deletes the assistant message at [assistantMessageId] and all
+  /// assistant messages that come after it (so the new response
+  /// replaces the old one), then re-runs [send] with the user
+  /// message(s) that preceded it. Used by the "Regenerate" button
+  /// on each assistant message bubble.
+  ///
+  /// If the chat is currently streaming or sending, this is a no-op
+  /// (the user must wait for the current response to finish or
+  /// cancel it first).
+  Future<void> regenerate(String assistantMessageId) async {
+    if (state.streaming || state.isSending) {
+      _debugLog('[CHAT] regenerate(): ignored (already sending/streaming)');
+      return;
+    }
+    final chatId = _ref.read(currentChatIdProvider);
+    if (chatId == null) {
+      _debugLog('[CHAT] regenerate(): no current chat id');
+      return;
+    }
+    final msgRepo = await _ref.read(messageRepositoryProvider.future);
+    final messages = await msgRepo.listForChat(chatId);
+
+    // Find the index of the assistant message to regenerate.
+    final idx = messages.indexWhere((m) => m.id == assistantMessageId);
+    if (idx == -1) {
+      _debugLog('[CHAT] regenerate(): message $assistantMessageId not found');
+      return;
+    }
+    if (messages[idx].role != MessageRole.assistant) {
+      _debugLog('[CHAT] regenerate(): message $assistantMessageId is not an '
+          'assistant message');
+      return;
+    }
+
+    // Find the most recent USER message before this assistant message.
+    // That's the prompt we'll re-send.
+    int userIdx = -1;
+    for (var i = idx - 1; i >= 0; i--) {
+      if (messages[i].role == MessageRole.user) {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx == -1) {
+      _debugLog('[CHAT] regenerate(): no user message found before the '
+          'assistant message');
+      return;
+    }
+    final userMessage = messages[userIdx];
+
+    // Delete the assistant message at idx AND all messages that come
+    // after it (so we don't accumulate duplicate responses).
+    for (var i = messages.length - 1; i >= idx; i--) {
+      await msgRepo.delete(messages[i].id);
+    }
+    // Also delete the user message — we'll re-add it via send().
+    await msgRepo.delete(userMessage.id);
+    _ref.invalidate(currentChatMessagesProvider);
+
+    // Set the composer's input to the user's text + attachments, then
+    // call send() to re-run the request.
+    _debugLog('[CHAT] regenerate(): re-sending user message "${userMessage.content}"');
+    state = state.copyWith(
+      input: userMessage.content,
+      attachedFiles: const <AttachedFile>[],  // attachments not preserved
+      error: null,
+      streamedText: '',
+      streamedReasoning: '',
+      captchaRequired: false,
+    );
+    await send();
   }
 }
 

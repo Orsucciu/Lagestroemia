@@ -52,11 +52,22 @@ enum ApiErrorKind {
   network,
   parse,
   cancelled,
+  /// The model the user picked is not available to them. chat.z.ai
+  /// returns this for guest users trying to use flagship models like
+  /// glm-5.3 / glm-5.2 / GLM-5-Turbo (HTTP 403 with message "Model
+  /// not available for current user level").
+  modelNotAllowed,
   unknown;
 
   static ApiErrorKind fromHttpStatus(int? status) {
     if (status == null) return ApiErrorKind.network;
-    if (status == 401 || status == 403) return ApiErrorKind.auth;
+    if (status == 401) return ApiErrorKind.auth;
+    // 403 stays `auth` for the OpenAI-compatible api.z.ai backend (where
+    // it means the API key is invalid/revoked), but on chat.z.ai it
+    // can also mean "this model is restricted to higher-tier users".
+    // The chat_state.dart code inspects the message text to upgrade a
+    // 403 to modelNotAllowed.
+    if (status == 403) return ApiErrorKind.auth;
     if (status == 404) return ApiErrorKind.notFound;
     if (status == 429) return ApiErrorKind.rateLimit;
     if (status >= 400 && status < 500) return ApiErrorKind.badRequest;

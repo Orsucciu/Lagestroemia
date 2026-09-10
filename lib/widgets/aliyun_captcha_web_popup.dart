@@ -88,16 +88,42 @@ class CaptchaWebPopup {
     // source tag so other extensions/scripts on the page don't confuse
     // us. We also poll the popup's `closed` property so we can detect
     // the user closing it without solving.
+    //
+    // Note: dart:html's MessageEvent.data is automatically converted
+    // from a JS plain object to a Dart Map<String, dynamic>. So we
+    // access its fields via the Map API, not js_util.getProperty
+    // (which expects a JS object).
     final completer = Completer<void>();
     StreamSubscription<html.MessageEvent>? sub;
     sub = html.window.onMessage.listen((event) {
       final data = event.data;
+      // Diagnostic: log every message so we can see what's actually
+      // being received during debugging.
+      // ignore: avoid_print
+      print('[CAPTCHA] window.onMessage: data type=${data.runtimeType}, '
+          'value=$data');
       if (data == null) return;
-      // The data is a JS object — use dart:js_util to read its fields.
-      final source = js_util.getProperty(data, 'source');
+      // Read fields — handle both Map (dart:html's auto-conversion of
+      // plain JS objects) and raw JS objects (js_util.getProperty).
+      String? source;
+      String? type;
+      String? value;
+      if (data is Map) {
+        source = data['source'] as String?;
+        type = data['type'] as String?;
+        value = data['data'] as String?;
+      } else {
+        try {
+          source = js_util.getProperty(data, 'source') as String?;
+          type = js_util.getProperty(data, 'type') as String?;
+          value = js_util.getProperty(data, 'data') as String?;
+        } catch (e) {
+          // ignore: avoid_print
+          print('[CAPTCHA] could not read fields from $data: $e');
+          return;
+        }
+      }
       if (source != _sourceTag) return;
-      final type = js_util.getProperty(data, 'type') as String?;
-      final value = js_util.getProperty(data, 'data') as String?;
       if (type == 'success') {
         if (!completer.isCompleted) {
           if (value != null && value.isNotEmpty) {

@@ -9,6 +9,7 @@ import 'dart:io' show File;
 import 'dart:typed_data' show Uint8List;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
@@ -251,9 +252,15 @@ class ChatScreen extends ConsumerWidget {
                   itemCount: messages.length,
                   itemBuilder: (_, i) {
                     final msg = messages[i];
+                    // The last assistant message is "streaming" while
+                    // the composer is in flight — show the streaming
+                    // cursor and hide the action row.
+                    final isStreaming = composer.streaming &&
+                        i == messages.length - 1 &&
+                        msg.role == MessageRole.assistant;
                     return _MessageBubble(
                       message: msg,
-                      streaming: false,
+                      streaming: isStreaming,
                     );
                   },
                 );
@@ -272,6 +279,11 @@ class ChatScreen extends ConsumerWidget {
     switch (e.kind) {
       case ApiErrorKind.auth:
         return l.chatErrorAuth;
+      case ApiErrorKind.modelNotAllowed:
+        return 'This model is not available to guest users. '
+            'Switch to a different model (e.g. GLM-4.7 or '
+            'GLM-5.3-Flash) using the model picker, or sign in '
+            'with an API key to access flagship models.';
       case ApiErrorKind.rateLimit:
       case ApiErrorKind.quota:
         return l.chatErrorRateLimit;
@@ -579,13 +591,13 @@ class _CaptchaPrompt extends StatelessWidget {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends ConsumerWidget {
   const _MessageBubble({required this.message, required this.streaming});
   final ChatMessage message;
   final bool streaming;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isUser = message.role == MessageRole.user;
     final scheme = Theme.of(context).colorScheme;
     final bubbleColor = isUser
@@ -625,7 +637,12 @@ class _MessageBubble extends StatelessWidget {
                       title: Text(AppLocalizations.of(context).chatReasoning,
                           style: Theme.of(context).textTheme.labelSmall),
                       children: <Widget>[
-                        MarkdownBody(data: message.reasoning!),
+                        // Selectable markdown for the reasoning panel
+                        // so the user can copy parts of it.
+                        MarkdownBody(
+                          data: message.reasoning!,
+                          selectable: true,
+                        ),
                       ],
                     ),
 
@@ -634,8 +651,52 @@ class _MessageBubble extends StatelessWidget {
                       message.toolCalls!.isNotEmpty)
                     _ToolCallsView(toolCallsJson: message.toolCalls!),
 
+                  // Selectable markdown so the user can copy parts of
+                  // the response. The streaming cursor is appended
+                  // only while the response is in flight.
                   MarkdownBody(
-                      data: message.content + (streaming ? '▏' : '')),
+                    data: message.content + (streaming ? '▏' : ''),
+                    selectable: true,
+                  ),
+
+                  // Action row for assistant messages: regenerate +
+                  // copy. Only shown after the message is fully
+                  // delivered (not while streaming).
+                  if (!isUser && !streaming && message.content.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          _ActionButton(
+                            icon: Icons.refresh,
+                            label: 'Regenerate',
+                            tooltip: 'Re-run this assistant response',
+                            onTap: () => ref
+                                .read(chatComposerProvider.notifier)
+                                .regenerate(message.id),
+                          ),
+                          const SizedBox(width: 8),
+                          _ActionButton(
+                            icon: Icons.copy_outlined,
+                            label: 'Copy',
+                            tooltip: 'Copy the response to the clipboard',
+                            onTap: () async {
+                              await Clipboard.setData(
+                                ClipboardData(text: message.content),
+                              );
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Copied to clipboard'),
+                                  duration: Duration(seconds: 1),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -698,6 +759,49 @@ class _MessageBubble extends StatelessWidget {
     } catch (_) {
       return null;
     }
+  }
+}
+
+/// Small inline action button used in the message bubble's action row
+/// (Regenerate, Copy). Renders an icon + a text label, with a tooltip.
+class _ActionButton extends StatelessWidget {
+  const _ActionButton({
+    required this.icon,
+    required this.label,
+    required this.tooltip,
+    required this.onTap,
+  });
+  final IconData icon;
+  final String label;
+  final String tooltip;
+  final Future<void> Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(icon, size: 14, color: theme.colorScheme.onSurfaceVariant),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -781,20 +885,99 @@ class _ComposerState extends ConsumerState<_Composer> {
   }
 
   Future<void> _pickFile() async {
+    // Filter to file types that z.ai accepts. Per the z.ai docs and
+    // the chat.z.ai website, supported attachment types are:
+    //   - Images: png, jpg, jpeg, gif, webp
+    //   - Documents: pdf, txt, md
+    //   - Office: docx, doc, xlsx, pptx
+    // We use FileType.custom + allowedExtensions so the native file
+    // picker filters visually in the dialog.
+    const allowedExtensions = <String>[
+      // Images
+      'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif',
+      // Documents
+      'pdf', 'txt', 'md', 'csv', 'json', 'html', 'xml',
+      // Office
+      'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt',
+      // Code
+      'js', 'ts', 'py', 'rb', 'go', 'rs', 'c', 'cpp', 'h', 'hpp',
+      'java', 'kt', 'swift', 'dart', 'sh', 'bash', 'ps1',
+      'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+      'sql', 'graphql',
+    ];
     final result = await FilePicker.platform.pickFiles(
-      type: FileType.any,
+      type: FileType.custom,
+      allowedExtensions: allowedExtensions,
       allowMultiple: true,
       withData: true,
     );
     if (result == null || result.files.isEmpty) return;
     for (final f in result.files) {
-      final bytes = f.bytes ?? (f.path == null ? null : await File(f.path!).readAsBytes());
+      // Guess the mime type from the extension since file_picker
+      // doesn't expose it. This is used to decide whether to send
+      // the file as an image_url (rendered inline) or as a file
+      // attachment (downloaded as a chip).
+      final mime = _guessMimeType(f.extension ?? '');
+      final bytes = f.bytes ??
+          (f.path == null ? null : await File(f.path!).readAsBytes());
       if (bytes == null) continue;
       ref.read(chatComposerProvider.notifier).attachFile(AttachedFile(
         name: f.name,
-        mimeType: 'application/octet-stream', // file_picker doesn't expose mime
+        mimeType: mime,
         bytes: bytes,
       ));
+    }
+  }
+
+  /// Returns a mime type string for the given file extension. Used
+  /// because FilePicker doesn't expose the mime type directly. We
+  /// only need to distinguish images (sent as image_url in the chat
+  /// completions body) from non-images (sent as file attachments).
+  static String _guessMimeType(String ext) {
+    switch (ext.toLowerCase()) {
+      case 'png':
+        return 'image/png';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      case 'bmp':
+        return 'image/bmp';
+      case 'tiff':
+      case 'tif':
+        return 'image/tiff';
+      case 'pdf':
+        return 'application/pdf';
+      case 'txt':
+        return 'text/plain';
+      case 'md':
+        return 'text/markdown';
+      case 'csv':
+        return 'text/csv';
+      case 'json':
+        return 'application/json';
+      case 'html':
+        return 'text/html';
+      case 'xml':
+        return 'text/xml';
+      case 'docx':
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'doc':
+        return 'application/msword';
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'xls':
+        return 'application/vnd.ms-excel';
+      case 'pptx':
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      case 'ppt':
+        return 'application/vnd.ms-powerpoint';
+      default:
+        // For code files and anything else, treat as plain text.
+        return 'text/plain';
     }
   }
 
