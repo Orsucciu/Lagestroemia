@@ -48,11 +48,80 @@
       color: #888;
       text-align: center;
     }
-    .error {
-      color: #c0392b;
+    .error { color: #c0392b; }
+    .success { color: #27ae60; }
+
+    /* Manual fallback section — hidden by default, shown when the
+       user clicks "Captcha not working?". */
+    #fallback {
+      margin-top: 24px;
+      padding: 16px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      max-width: 360px;
+      width: 100%;
+      display: none;
     }
-    .success {
-      color: #27ae60;
+    #fallback.visible { display: block; }
+    #fallback h3 {
+      margin: 0 0 8px 0;
+      font-size: 14px;
+      color: #333;
+    }
+    #fallback ol {
+      margin: 0 0 12px 0;
+      padding-left: 20px;
+      font-size: 12px;
+      color: #555;
+      line-height: 1.5;
+    }
+    #fallback ol li { margin-bottom: 4px; }
+    #fallback a {
+      color: #7C4DFF;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    #fallback a:hover { text-decoration: underline; }
+    #fallback textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      resize: vertical;
+      min-height: 60px;
+      margin-bottom: 8px;
+    }
+    #fallback button {
+      padding: 8px 16px;
+      background: #7C4DFF;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    #fallback button:hover { background: #651fff; }
+    #toggle-fallback {
+      margin-top: 16px;
+      background: none;
+      border: none;
+      color: #7C4DFF;
+      cursor: pointer;
+      font-size: 12px;
+      text-decoration: underline;
+      padding: 4px;
+    }
+    #toggle-fallback:hover { color: #651fff; }
+    code {
+      background: #f0f0f0;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 11px;
     }
   </style>
 </head>
@@ -63,6 +132,46 @@
   <button id="trigger-button" type="button" tabindex="-1" aria-hidden="true"></button>
   <div id="status">Loading captcha…</div>
 
+  <button id="toggle-fallback" type="button">
+    Captcha not working? Click here
+  </button>
+
+  <div id="fallback">
+    <h3>Manual fallback</h3>
+    <p style="text-align: left; margin-bottom: 12px;">
+      If the captcha above doesn't work (e.g. it solves but the app
+      still says "captcha required"), solve it on chat.z.ai instead
+      and paste the result here.
+    </p>
+    <ol>
+      <li>
+        Open
+        <a href="https://chat.z.ai" target="_blank" rel="noopener">
+          chat.z.ai
+        </a>
+        in a new tab.
+      </li>
+      <li>Sign in there (it auto-creates a free guest account).</li>
+      <li>Type any message and send it — the captcha will appear.</li>
+      <li>Solve the captcha on chat.z.ai.</li>
+      <li>
+        Open DevTools (F12) → <strong>Network</strong> tab.
+      </li>
+      <li>
+        Find the <code>POST /api/v2/chat/completions</code> request.
+      </li>
+      <li>
+        Click it → <strong>Payload</strong> tab → copy the value of
+        the <code>captcha_verify_param</code> field (a long base64
+        string starting with <code>eyJ</code>).
+      </li>
+      <li>Paste it below and click "Send to app".</li>
+    </ol>
+    <textarea id="manual-param" placeholder="Paste the captcha_verify_param here (starts with eyJ...)"></textarea>
+    <br>
+    <button id="send-manual" type="button">Send to app</button>
+  </div>
+
   <script>
     // Configuration injected by the opener via URL params.
     var params = new URLSearchParams(window.location.search);
@@ -72,11 +181,32 @@
     var REGION = params.get('region') || 'sgp';
 
     var statusEl = document.getElementById('status');
+    var fallbackEl = document.getElementById('fallback');
+    var toggleBtn = document.getElementById('toggle-fallback');
+    var manualTextarea = document.getElementById('manual-param');
+    var sendManualBtn = document.getElementById('send-manual');
 
     function setStatus(text, kind) {
       statusEl.textContent = text;
       statusEl.className = kind || '';
     }
+
+    // Toggle the manual fallback section.
+    toggleBtn.addEventListener('click', function () {
+      fallbackEl.classList.toggle('visible');
+    });
+
+    // Send the manually-pasted param to the opener.
+    sendManualBtn.addEventListener('click', function () {
+      var v = (manualTextarea.value || '').trim();
+      if (!v) {
+        manualTextarea.focus();
+        return;
+      }
+      setStatus('Sending manual param to app…', 'success');
+      sendToOpener('success', v);
+      setTimeout(function () { window.close(); }, 400);
+    });
 
     // Send a message to the opener window. We use postMessage so this
     // works cross-origin (the opener is the Flutter web app, this
