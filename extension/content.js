@@ -48,22 +48,15 @@
 // ---- Native messaging status tracking ----
 let nativeReady = false;
 
-// Listen for native host status from the background script.
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-  if (message.type === 'nativeStatus') {
-    nativeReady = message.connected;
-    console.log('[content] Native host status:', message.connected ? 'CONNECTED' : 'NOT CONNECTED');
-    // Update the badge text.
-    var badge = document.getElementById('lagestroemia-badge');
-    if (badge) {
-      badge.innerHTML = nativeReady
-        ? '🌺 Lagestroemia — Server on :8081'
-        : '🌺 Lagestroemia — No server (native host not registered)';
-      badge.style.background = nativeReady ? '#27ae60' : '#e67e22';
-    }
+function updateBadge() {
+  var badge = document.getElementById('lagestroemia-badge');
+  if (badge) {
+    badge.innerHTML = nativeReady
+      ? '🌺 Lagestroemia — Server on :8081'
+      : '🌺 Lagestroemia — No server (native host not registered)';
+    badge.style.background = nativeReady ? '#27ae60' : '#e67e22';
   }
-  // Fall through to the main message handler below.
-});
+}
 
 // ---- Constants ----
 
@@ -498,6 +491,14 @@ async function sendChatWithRetry(messages, model, options, onChunk, onStatus) {
 // ---- Message handler ----
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[content] Message:', message.type);
+
+  // Handle native host status updates.
+  if (message.type === 'nativeStatus') {
+    nativeReady = message.connected;
+    console.log('[content] Native host:', message.connected ? 'CONNECTED' : 'DISCONNECTED');
+    updateBadge();
+    return false;
+  }
 
   if (message.type === 'sendChat') {
     const { messages, model, options, requestId } = message;

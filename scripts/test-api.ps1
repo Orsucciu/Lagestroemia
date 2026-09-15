@@ -1,8 +1,8 @@
-// Test the full chain: HTTP → native → background → content → chat.z.ai
-// Usage: .\scripts\test-api.ps1
-//
-// This script tests each step of the chain and prints diagnostics
-// so you can see exactly where it gets stuck.
+# Test the full chain: HTTP -> native -> background -> content -> chat.z.ai
+# Usage: .\scripts\test-api.ps1
+#
+# This script tests each step of the chain and prints diagnostics
+# so you can see exactly where it gets stuck.
 
 $ErrorActionPreference = "Stop"
 

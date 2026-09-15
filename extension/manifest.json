@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lagestroemia for chat.z.ai",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A powerful chat client for chat.z.ai with auto-retry, model switching, and conversation management.",
   "permissions": [
     "storage",
@@ -16,7 +16,8 @@
     "https://o.alicdn.com/*"
   ],
   "action": {
-    "default_title": "Open Lagestroemia"
+    "default_title": "Open Lagestroemia",
+    "default_popup": "sidepanel.html"
   },
   "side_panel": {
     "default_path": "sidepanel.html"
