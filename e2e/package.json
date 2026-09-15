@@ -1,0 +1,17 @@
+{
+  "name": "lagestroemia-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright end-to-end tests for the Lagestroemia web app",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report",
+    "serve": "flutter build web && python3 -m http.server 8080 --directory build/web",
+    "serve:dev": "flutter run -d web-server --web-port 8080 --web-hostname 0.0.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

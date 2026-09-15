@@ -7,12 +7,14 @@
 //  - account state (signed-in/out)
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logging/logging.dart' show Level;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common/sqflite.dart' show Database;
 
 import '../core/config/app_config.dart';
+import '../core/auth/chat_zai_signature.dart' show generateDeviceId;
 import '../core/logging/logging.dart';
 import '../core/storage/secure_storage_service.dart';
 import '../data/api/zai_api_client.dart';
@@ -154,6 +156,21 @@ final availableModelsProvider =
   }
 });
 
+/// Provides a persistent device id for chat.z.ai requests. Generated
+/// once on first access and stored in SharedPreferences. Matches the
+/// `uid_<7 alphanumeric chars>` format that the Aliyun ARMS SDK uses
+/// on the real chat.z.ai website.
+final deviceIdProvider = Provider<String>((ref) {
+  final prefs = ref.watch(sharedPrefsProvider);
+  const key = '${AppConfig.prefsPrefix}device_id';
+  var id = prefs.getString(key);
+  if (id == null || id.isEmpty) {
+    id = generateDeviceId();
+    prefs.setString(key, id);
+  }
+  return id;
+});
+
 /// Resolves to a [ZaiApiClient] using the current auth mode, captcha
 /// param, and (in guest mode) the active anonymous profile's guest
 /// token. Returns `null` if the user is not signed in at all.
@@ -179,18 +196,26 @@ final apiClientProvider = Provider<ZaiApiClient?>((ref) {
   // In guest mode, prefer the active anonymous profile's guest token
   // (so the chat completions are isolated to that profile).
   String bearerToken;
+  String? guestUserId;
   if (auth.mode == AuthMode.guest) {
     final activeProfile = anonProfiles.active;
     bearerToken = activeProfile?.guestToken ?? auth.bearerToken!;
+    guestUserId = activeProfile?.guestUserId ?? auth.guestUserId;
   } else {
     bearerToken = auth.bearerToken!;
   }
+  // Device ID is only needed for chat.z.ai (guest mode).
+  final deviceId = auth.mode == AuthMode.guest
+      ? ref.watch(deviceIdProvider)
+      : null;
   return ZaiApiClient(
     bearerToken: bearerToken,
     apiBaseUrl: baseUrl,
     backend: backend,
     dio: dio,
     captchaVerifyParam: captchaParam,
+    userId: guestUserId,
+    deviceId: deviceId,
   );
 });
 

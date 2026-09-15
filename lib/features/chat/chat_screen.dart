@@ -9,7 +9,7 @@ import 'dart:io' show File;
 import 'dart:typed_data' show Uint8List;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData, HardwareKeyboard, KeyEventResult, KeyDownEvent, PhysicalKeyboardKey;
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
@@ -1023,18 +1023,44 @@ class _ComposerState extends ConsumerState<_Composer> {
                   onPressed: composer.streaming ? null : _pickFile,
                 ),
                 Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    minLines: 1,
-                    maxLines: 6,
-                    decoration: InputDecoration(
-                      hintText: l.chatComposerPlaceholder,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
+                  child: Focus(
+                    onKeyEvent: (node, event) {
+                      if (composer.streaming) return KeyEventResult.ignored;
+                      final settings = ref.read(settingsStateProvider);
+                      final isEnter = event.physicalKey == PhysicalKeyboardKey.enter ||
+                          event.physicalKey == PhysicalKeyboardKey.numpadEnter;
+                      if (!isEnter) return KeyEventResult.ignored;
+                      final isShift = HardwareKeyboard.instance.isShiftPressed;
+                      final isCtrl = HardwareKeyboard.instance.isControlPressed ||
+                          HardwareKeyboard.instance.isMetaPressed;
+                      if (settings.sendOnEnter) {
+                        // Enter sends, Shift+Enter = newline
+                        if (isShift) return KeyEventResult.ignored;
+                        if (event is KeyDownEvent) {
+                          _send();
+                        }
+                        return KeyEventResult.handled;
+                      } else {
+                        // Ctrl+Enter sends, Enter = newline
+                        if (!isCtrl) return KeyEventResult.ignored;
+                        if (event is KeyDownEvent) {
+                          _send();
+                        }
+                        return KeyEventResult.handled;
+                      }
+                    },
+                    child: TextField(
+                      controller: _controller,
+                      minLines: 1,
+                      maxLines: 6,
+                      decoration: InputDecoration(
+                        hintText: l.chatComposerPlaceholder,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
+                      enabled: !composer.streaming,
                     ),
-                    enabled: !composer.streaming,
-                    onSubmitted: (_) => _send(),
                   ),
                 ),
                 const SizedBox(width: 8),

@@ -29,8 +29,10 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:logging/logging.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/auth/chat_zai_signature.dart';
 import '../../core/result/result.dart';
 import '../models/models.dart';
 
@@ -104,6 +106,8 @@ class ZaiApiClient {
     ApiBackend backend = ApiBackend.apiZai,
     Dio? dio,
     String? captchaVerifyParam,
+    this.userId,
+    this.deviceId,
   })  : _token = bearerToken,
         _backend = backend,
         _apiBaseUrl = apiBaseUrl ??
@@ -124,10 +128,16 @@ class ZaiApiClient {
         'Accept-Language': 'en-US,en',
         if (backend == ApiBackend.chatZai) ...<String, Object?>{
           'X-FE-Version': AppConfig.chatZaiFeVersion,
+          // Note: Origin and Referer are set here but on the Web target
+          // the browser will override them with the actual origin
+          // (localhost). chat.z.ai's CORS policy allows any origin
+          // (access-control-allow-origin: *), so this is fine.
           'Origin': 'https://chat.z.ai',
           'Referer': 'https://chat.z.ai/',
           'User-Agent':
               'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+          'X-Region': 'overseas',
+          if (deviceId != null) 'X-Device-ID': deviceId,
         },
       };
   }
@@ -137,7 +147,18 @@ class ZaiApiClient {
   final String _apiBaseUrl;
   final String? _captchaVerifyParam;
   final Dio _dio;
+
+  /// The chat.z.ai guest user id (extracted from the JWT). Used in the
+  /// signature's sortedPayload and the URL query params. Null on
+  /// api.z.ai (not needed there).
+  final String? userId;
+
+  /// A persistent device id matching chat.z.ai's `uid_<7 chars>` format.
+  /// Sent as the X-Device-ID header. Null if not yet generated.
+  final String? deviceId;
+
   static final Logger _log = Logger('lagestroemia.api');
+  static const _uuid = Uuid();
 
   /// Returns the configured base URL (no trailing slash).
   String get apiBaseUrl => _apiBaseUrl;
@@ -281,23 +302,74 @@ class ZaiApiClient {
       stream: true,
     );
 
+    // Build the URL. For chat.z.ai, we need to append query params
+    // (timestamp, requestId, user_id, browser fingerprint, and
+    // signature_timestamp) and add the X-Signature header.
+    final String path = chatCompletionsPathFor(model: model, agentMode: agentMode);
+    final Map<String, Object?> extraHeaders = <String, Object?>{
+      'Accept': 'text/event-stream',
+    };
+
+    if (_backend == ApiBackend.chatZai) {
+      final promptText = _extractPromptText(messages);
+      final meta = buildChatZaiRequestMeta(
+        userId: this.userId,
+        token: _token,
+      );
+      final signature = computeChatZaiSignature(
+        sortedPayload: meta.sortedPayload,
+        promptText: promptText,
+        timestamp: meta.timestamp,
+      );
+      // Build the full URL with query params.
+      final queryParams = Map<String, String>.from(meta.urlParams)
+        ..['signature_timestamp'] = meta.timestamp;
+      final queryStr = queryParams.entries
+          .map((e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+          .join('&');
+      final fullUrl = '$path?$queryStr';
+      extraHeaders['X-Signature'] = signature;
+
+      Response<ResponseBody> response;
+      try {
+        response = await _dio.post<ResponseBody>(
+          fullUrl,
+          data: jsonEncode(body),
+          cancelToken: cancelToken,
+          options: Options(
+            responseType: ResponseType.stream,
+            headers: extraHeaders,
+          ),
+        );
+      } on DioException catch (e) {
+        if (e.type == DioExceptionType.cancel) {
+          yield const ChatStreamChunk(finishReason: 'cancelled');
+          return;
+        }
+        _log.warning('chatCompletionStream failed: $e');
+        final apiError = _dioErrorToApiError(e);
+        yield ChatStreamChunk(error: apiError);
+        return;
+      }
+      yield* _processStreamResponse(response);
+      return;
+    }
+
+    // api.z.ai (paid) — no signature needed.
     Response<ResponseBody> response;
     try {
       response = await _dio.post<ResponseBody>(
-        chatCompletionsPathFor(model: model, agentMode: agentMode),
+        path,
         data: jsonEncode(body),
         cancelToken: cancelToken,
         options: Options(
           responseType: ResponseType.stream,
-          headers: <String, Object?>{
-            'Accept': 'text/event-stream',
-          },
+          headers: extraHeaders,
         ),
       );
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
-        // Cancelled by the user — yield a special chunk so the consumer can
-        // stop cleanly.
         yield const ChatStreamChunk(finishReason: 'cancelled');
         return;
       }
@@ -306,7 +378,12 @@ class ZaiApiClient {
       yield ChatStreamChunk(error: apiError);
       return;
     }
+    yield* _processStreamResponse(response);
+  }
 
+  /// Processes the streaming response, yielding [ChatStreamChunk]s.
+  Stream<ChatStreamChunk> _processStreamResponse(
+      Response<ResponseBody> response) async* {
     final stream =
         response.data?.stream ?? const Stream<List<int>>.empty();
     final decoded = _utf8Decode(stream);
@@ -332,15 +409,12 @@ class ZaiApiClient {
             : rawCode is String
                 ? int.tryParse(rawCode)
                 : null;
-        // The chat.z.ai captcha-required error has error_code
-        // `FRONTEND_CAPTCHA_REQUIRED` (a string), not a numeric code.
         final errorCodeString = inlineError['error_code'] as String?;
         final isCaptchaRequired =
             errorCodeString == 'FRONTEND_CAPTCHA_REQUIRED' ||
                 (inlineError['captcha_error_type'] != null);
         final detail =
             (inlineError['detail'] as String?) ?? 'Unknown error';
-        // 426 = outdated client; treat as a soft error.
         yield ChatStreamChunk(
           error: ApiError(
             message: isCaptchaRequired
@@ -361,7 +435,6 @@ class ZaiApiClient {
 
       final choices = payload['choices'] as List<Object?>?;
       if (choices == null || choices.isEmpty) {
-        // Sometimes chat.z.ai sends usage-only chunks. Skip.
         final usage = payload['usage'];
         if (usage is Map<Object?, Object?>?) {
           yield ChatStreamChunk(usage: usage?.cast<String, Object?>());
@@ -380,6 +453,29 @@ class ZaiApiClient {
         usage: usage?.cast<String, Object?>(),
       );
     }
+  }
+
+  /// Extracts the prompt text from the last user message in the
+  /// messages list. Used for the `signature_prompt` field and the
+  /// signature computation. Handles both plain-text and multi-modal
+  /// content.
+  String _extractPromptText(List<Map<String, Object?>> messages) {
+    for (var i = messages.length - 1; i >= 0; i--) {
+      final m = messages[i];
+      if (m['role'] == 'user') {
+        final content = m['content'];
+        if (content is String) return content;
+        if (content is List) {
+          for (final part in content) {
+            if (part is Map && part['type'] == 'text') {
+              return part['text'] as String? ?? '';
+            }
+          }
+        }
+        return '';
+      }
+    }
+    return '';
   }
 
   /// Uploads a file to z.ai's file storage and returns the file id.
@@ -592,6 +688,58 @@ class ZaiApiClient {
     final defaultModel = _backend == ApiBackend.chatZai
         ? AppConfig.defaultGuestModel
         : AppConfig.defaultModel;
+
+    if (_backend == ApiBackend.chatZai) {
+      // chat.z.ai uses a much richer body format than the OpenAI-compatible
+      // api.z.ai. The extra fields (signature_prompt, features, variables,
+      // chat_id, id, background_tasks) are required by the backend —
+      // without them, the request is rejected even with a valid signature
+      // and captcha.
+      final promptText = _extractPromptText(messages);
+      final thinkingEnabled = thinking != null;
+      return <String, Object?>{
+        'stream': stream,
+        'model': model ?? defaultModel,
+        'messages': messages,
+        'signature_prompt': promptText,
+        'params': <String, Object?>{},
+        'extra': <String, Object?>{},
+        'features': <String, Object?>{
+          'image_generation': false,
+          'web_search': false,
+          'auto_web_search': false,
+          'preview_mode': true,
+          'flags': <String>[],
+          'vlm_tools_enable': false,
+          'vlm_web_search_enable': false,
+          'vlm_website_mode': false,
+          'enable_thinking': thinkingEnabled,
+          'reasoning_effort': thinkingEnabled ? 'max' : 'low',
+        },
+        'variables': <String, Object?>{
+          '{{USER_NAME}}': 'Guest',
+          '{{USER_LOCATION}}': 'Unknown',
+          '{{CURRENT_DATETIME}}': DateTime.now().toLocal().toString().substring(0, 19),
+          '{{CURRENT_DATE}}': DateTime.now().toLocal().toString().substring(0, 10),
+          '{{CURRENT_TIME}}': DateTime.now().toLocal().toString().substring(11, 19),
+          '{{CURRENT_WEEKDAY}}': ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][DateTime.now().weekday - 1],
+          '{{CURRENT_TIMEZONE}}': 'UTC',
+          '{{USER_LANGUAGE}}': 'en-US',
+        },
+        'chat_id': requestId ?? _uuid.v4(),
+        'id': _uuid.v4(),
+        'current_user_message_id': _uuid.v4(),
+        'current_user_message_parent_id': null,
+        'background_tasks': <String, Object?>{
+          'title_generation': true,
+          'tags_generation': true,
+        },
+        if (_captchaVerifyParam != null)
+          'captcha_verify_param': _captchaVerifyParam,
+      };
+    }
+
+    // api.z.ai (paid) — OpenAI-compatible format.
     final body = <String, Object?>{
       'model': model ?? defaultModel,
       'messages': messages,
@@ -607,9 +755,6 @@ class ZaiApiClient {
       if (userId != null) 'user_id': userId,
       if (doSample != null) 'do_sample': doSample,
     };
-    if (_backend == ApiBackend.chatZai && _captchaVerifyParam != null) {
-      body['captcha_verify_param'] = _captchaVerifyParam;
-    }
     return body;
   }
 }

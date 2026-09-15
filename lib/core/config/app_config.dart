@@ -51,8 +51,8 @@ class AppConfig {
 
   /// Front-end version sent in `X-FE-Version` header for chat.z.ai calls.
   /// This is the version the website itself sends (matches the JS bundle
-  /// at https://z-cdn.chatglm.cn/z-ai/frontend/prod-fe-1.1.93/...).
-  static const String chatZaiFeVersion = 'prod-fe-1.1.93';
+  /// at https://z-cdn.chatglm.cn/z-ai/frontend/prod-fe-1.1.95/...).
+  static const String chatZaiFeVersion = 'prod-fe-1.1.95';
 
   // ---- Chat completion paths (per mode) --------------------------------
 

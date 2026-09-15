@@ -19,6 +19,7 @@ class SettingsState {
     this.localeTag = 'en',
     this.model = AppConfig.defaultModel,
     this.apiBaseUrl = AppConfig.defaultApiBaseUrl,
+    this.sendOnEnter = true,
   });
 
   final ThemeMode themeMode;
@@ -32,17 +33,23 @@ class SettingsState {
   /// z.ai API base URL.
   final String apiBaseUrl;
 
+  /// When true, pressing Enter sends the message (Shift+Enter inserts a
+  /// newline). When false, Ctrl+Enter sends and Enter inserts a newline.
+  final bool sendOnEnter;
+
   SettingsState copyWith({
     ThemeMode? themeMode,
     Object? localeTag = _sentinel,
     String? model,
     String? apiBaseUrl,
+    bool? sendOnEnter,
   }) {
     return SettingsState(
       themeMode: themeMode ?? this.themeMode,
       localeTag: identical(localeTag, _sentinel) ? this.localeTag : localeTag as String?,
       model: model ?? this.model,
       apiBaseUrl: apiBaseUrl ?? this.apiBaseUrl,
+      sendOnEnter: sendOnEnter ?? this.sendOnEnter,
     );
   }
 }
@@ -58,16 +65,20 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
 
   final SharedPreferences _prefs;
 
+  static const _kPrefSendOnEnter = '${AppConfig.prefsPrefix}send_on_enter';
+
   void _load() {
     final mode = _prefs.getString(AppConfig.prefsKeyThemeMode);
     final locale = _prefs.getString(AppConfig.prefsKeyLocale);
     final model = _prefs.getString(AppConfig.prefsKeyModel);
     final baseUrl = _prefs.getString(AppConfig.prefsKeyApiBaseUrl);
+    final sendOnEnter = _prefs.getBool(_kPrefSendOnEnter) ?? true;
     state = SettingsState(
       themeMode: _parseThemeMode(mode),
       localeTag: locale,
       model: model ?? AppConfig.defaultModel,
       apiBaseUrl: baseUrl ?? AppConfig.defaultApiBaseUrl,
+      sendOnEnter: sendOnEnter,
     );
   }
 
@@ -93,6 +104,11 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   Future<void> setApiBaseUrl(String url) async {
     state = state.copyWith(apiBaseUrl: url);
     await _prefs.setString(AppConfig.prefsKeyApiBaseUrl, url);
+  }
+
+  Future<void> setSendOnEnter(bool value) async {
+    state = state.copyWith(sendOnEnter: value);
+    await _prefs.setBool(_kPrefSendOnEnter, value);
   }
 
   ThemeMode _parseThemeMode(String? s) {

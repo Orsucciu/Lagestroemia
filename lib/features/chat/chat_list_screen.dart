@@ -20,6 +20,9 @@ import '../../data/models/models.dart';
 /// Search query for the chat list. Empty means "show all".
 final chatListSearchProvider = StateProvider<String>((ref) => '');
 
+/// Selected model filter for the chat list. Null means "show all models".
+final chatListModelFilterProvider = StateProvider<String?>((ref) => null);
+
 class ChatListScreen extends ConsumerWidget {
   const ChatListScreen({super.key});
 
@@ -28,6 +31,7 @@ class ChatListScreen extends ConsumerWidget {
     final l = AppLocalizations.of(context);
     final chatsAsync = ref.watch(chatListProvider);
     final search = ref.watch(chatListSearchProvider);
+    final modelFilter = ref.watch(chatListModelFilterProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -120,7 +124,13 @@ class ChatListScreen extends ConsumerWidget {
       body: Column(
         children: <Widget>[
           // Anonymous tab switcher (only shown in guest mode).
-          _AnonTabBar(),
+          const _AnonTabBar(),
+          // Model filter tabs — group chats by model.
+          chatsAsync.when(
+            data: (chats) => _ModelTabBar(chats: chats),
+            loading: () => const SizedBox.shrink(),
+            error: (_, __) => const SizedBox.shrink(),
+          ),
           Padding(
             padding: const EdgeInsets.all(12),
             child: TextField(
@@ -138,13 +148,20 @@ class ChatListScreen extends ConsumerWidget {
           Expanded(
             child: chatsAsync.when(
               data: (chats) {
-                final filtered = search.isEmpty
-                    ? chats
-                    : chats
-                        .where((c) => c.title.toLowerCase().contains(
-                              search.toLowerCase(),
-                            ))
-                        .toList(growable: false);
+                // Apply model filter + search filter.
+                var filtered = chats;
+                if (modelFilter != null) {
+                  filtered = filtered
+                      .where((c) => (c.model ?? 'default') == modelFilter)
+                      .toList(growable: false);
+                }
+                if (search.isNotEmpty) {
+                  filtered = filtered
+                      .where((c) => c.title.toLowerCase().contains(
+                            search.toLowerCase(),
+                          ))
+                      .toList(growable: false);
+                }
                 if (filtered.isEmpty) {
                   return Center(child: Text(l.commonEmpty));
                 }
@@ -161,6 +178,95 @@ class ChatListScreen extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Horizontal scrollable row of model tabs. Each tab represents a
+/// model that has at least one chat. Tapping a tab filters the chat
+/// list to that model. The "All" tab shows every chat regardless of
+/// model.
+class _ModelTabBar extends ConsumerWidget {
+  const _ModelTabBar({required this.chats});
+  final List<Chat> chats;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final selected = ref.watch(chatListModelFilterProvider);
+    // Build the list of unique models from the chats.
+    final models = <String>{};
+    for (final c in chats) {
+      models.add(c.model ?? 'default');
+    }
+    if (models.isEmpty) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: <Widget>[
+            _ModelTab(
+              label: 'All',
+              selected: selected == null,
+              onTap: () =>
+                  ref.read(chatListModelFilterProvider.notifier).state = null,
+              theme: theme,
+            ),
+            for (final m in models) ...<Widget>[
+              const SizedBox(width: 4),
+              _ModelTab(
+                label: m,
+                selected: selected == m,
+                onTap: () =>
+                    ref.read(chatListModelFilterProvider.notifier).state = m,
+                theme: theme,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModelTab extends StatelessWidget {
+  const _ModelTab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    required this.theme,
+  });
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected
+          ? theme.colorScheme.primaryContainer
+          : theme.colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Text(
+            label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: selected
+                  ? theme.colorScheme.onPrimaryContainer
+                  : theme.colorScheme.onSurfaceVariant,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -249,6 +355,7 @@ class _ChatTile extends ConsumerWidget {
 
 /// Anonymous tab switcher bar. Shows horizontal scrollable row of tabs.
 class _AnonTabBar extends ConsumerWidget {
+  const _AnonTabBar();
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final anonProfiles = ref.watch(anonProfilesProvider);

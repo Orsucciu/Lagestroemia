@@ -209,6 +209,18 @@ class SettingsScreen extends ConsumerWidget {
             ),
           ),
 
+          _SectionHeader('Chat'),
+          SwitchListTile(
+            secondary: const Icon(Icons.keyboard_return),
+            title: const Text('Send on Enter'),
+            subtitle: Text(settings.sendOnEnter
+                ? 'Enter sends, Shift+Enter inserts a newline'
+                : 'Ctrl+Enter sends, Enter inserts a newline'),
+            value: settings.sendOnEnter,
+            onChanged: (v) =>
+                ref.read(settingsStateProvider.notifier).setSendOnEnter(v),
+          ),
+
           _SectionHeader(l.settingsAboutSection),
           ListTile(
             leading: const Icon(Icons.info_outline),
