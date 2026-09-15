@@ -29,7 +29,34 @@ engine (Skia/Impeller).
 - **Settings**: account (API key), theme (light/dark/system), language
   (English / 中文), model picker.
 
-## Building
+## Quick Start (Windows — no build required)
+
+If you just want to run the app on Windows without setting up Flutter,
+Visual Studio, Nuget, and ATL:
+
+```cmd
+git clone https://github.com/Orsucciu/Lagestroemia.git
+cd Lagestroemia
+scripts\download-windows.bat
+```
+
+Or in PowerShell:
+
+```powershell
+.\scripts\download-windows.ps1
+```
+
+This downloads the pre-built Windows executable from the [latest
+release](https://github.com/Orsucciu/Lagestroemia/releases/tag/latest),
+extracts it to `.\lagestroemia\`, and prints the path to `lagestroemia.exe`.
+Double-click the exe to run.
+
+The pre-built binary is automatically rebuilt on every push to `main`
+via GitHub Actions. The build runs on `windows-latest` which has Visual
+Studio 2022 Enterprise with ATL pre-installed, so it includes the
+WebView2 runtime and all dependencies.
+
+## Building from source
 
 ### Prerequisites (all platforms)
 
