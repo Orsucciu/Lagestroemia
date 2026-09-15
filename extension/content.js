@@ -1,21 +1,71 @@
 // content.js — Content script that runs inside the chat.z.ai tab.
-//
-// This is the KEY part of the extension: because this script runs
-// inside https://chat.z.ai/, all fetch/XHR requests it makes
-// automatically have:
-//   - Origin: https://chat.z.ai
-//   - Referer: https://chat.z.ai/
-//   - Cookies: the chat.z.ai cookies (including the guest JWT)
-//
-// This means:
-//   1. No CORS issues (same-origin requests to /api/v2/chat/completions)
-//   2. The Aliyun captcha SDK works natively (correct Referer)
-//   3. The X-Signature header is accepted
-//
-// The content script acts as a "server" that the side panel talks to
-// via chrome.runtime messaging. The side panel sends chat requests,
-// the content script executes them in the chat.z.ai context, and
-// streams the response back.
+
+// ---- Add a visible badge so the user can confirm the extension is loaded ----
+(function addBadge() {
+  // Remove any existing badge.
+  var existing = document.getElementById('lagestroemia-badge');
+  if (existing) existing.remove();
+
+  var badge = document.createElement('div');
+  badge.id = 'lagestroemia-badge';
+  badge.innerHTML = '🌺 Lagestroemia Connected';
+  badge.style.cssText = [
+    'position:fixed',
+    'bottom:12px',
+    'right:12px',
+    'z-index:9999999',
+    'background:#7C4DFF',
+    'color:white',
+    'padding:6px 14px',
+    'border-radius:20px',
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+    'font-size:12px',
+    'font-weight:600',
+    'box-shadow:0 2px 8px rgba(124,77,255,0.4)',
+    'cursor:pointer',
+    'transition:opacity 0.3s',
+    'user-select:none',
+  ].join(';');
+
+  // Click to hide for 10 seconds.
+  badge.onclick = function() {
+    badge.style.opacity = '0.3';
+    setTimeout(function() { badge.style.opacity = '1'; }, 10000);
+  };
+
+  // Wait for document.body to be available.
+  if (document.body) {
+    document.body.appendChild(badge);
+  } else {
+    document.addEventListener('DOMContentLoaded', function() {
+      document.body.appendChild(badge);
+    });
+  }
+
+  console.log('[content] 🌺 Lagestroemia badge added — extension is loaded and running');
+})();
+
+// ---- Native messaging status tracking ----
+let nativeReady = false;
+
+// Listen for native host status from the background script.
+chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+  if (message.type === 'nativeStatus') {
+    nativeReady = message.connected;
+    console.log('[content] Native host status:', message.connected ? 'CONNECTED' : 'NOT CONNECTED');
+    // Update the badge text.
+    var badge = document.getElementById('lagestroemia-badge');
+    if (badge) {
+      badge.innerHTML = nativeReady
+        ? '🌺 Lagestroemia — Server on :8081'
+        : '🌺 Lagestroemia — No server (native host not registered)';
+      badge.style.background = nativeReady ? '#27ae60' : '#e67e22';
+    }
+  }
+  // Fall through to the main message handler below.
+});
+
+// ---- Constants ----
 
 const SECRET_KEY = 'key-@@@@)))()((9))-xxxx&&&%%%%%';
 const CHAT_COMPLETIONS_URL = 'https://chat.z.ai/api/v2/chat/completions';

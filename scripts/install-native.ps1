@@ -1,13 +1,18 @@
 # Register the Lagestroemia native messaging host on Windows.
 #
-# Usage (in PowerShell as administrator):
-#   .\scripts\install-native.ps1
+# Usage:
+#   .\scripts\install-native.ps1 -Browser chrome -ExtensionId <id>
+#   .\scripts\install-native.ps1 -Browser edge   -ExtensionId <id>
+#   .\scripts\install-native.ps1 -Browser firefox
 #
-# Or from cmd:
-#   powershell -ExecutionPolicy Bypass -File scripts\install-native.ps1
+# For Chrome/Edge, find the extension ID on chrome://extensions after
+# loading the unpacked extension. For Firefox, the ID is in the manifest.
 
 param(
-    [string]$Browser = "chrome"
+    [Parameter(Mandatory=$true)]
+    [string]$Browser,
+
+    [string]$ExtensionId
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,23 +28,59 @@ if (-not $PythonExe) {
     exit 1
 }
 
-# Create a wrapper batch script (Chrome on Windows needs an .exe or .bat).
+# Create a wrapper batch script.
 $WrapperBat = Join-Path $ExtDir "native_host_wrapper.bat"
 @"
 @echo off
 "$PythonExe" "$NativeHostPath"
 "@ | Set-Content $WrapperBat -Encoding ASCII
 
-# The native messaging host manifest.
-$Manifest = @{
-    name = "lagestroemia"
-    description = "Lagestroemia local proxy server for chat.z.ai"
-    path = $WrapperBat
-    type = "stdio"
-    allowed_extensions = @("lagestroemia@orsucciu.github.io")
-} | ConvertTo-Json -Depth 5
+# For Firefox, use the extension ID from the manifest.
+if ($Browser -eq "firefox") {
+    $ExtensionId = "lagestroemia@orsucciu.github.io"
+}
 
-# Determine the registry key based on the browser.
+# For Chrome/Edge, ask for the extension ID if not provided.
+if ($Browser -ne "firefox" -and -not $ExtensionId) {
+    Write-Host ""
+    Write-Host "To find the extension ID:" -ForegroundColor Cyan
+    Write-Host "  1. Open chrome://extensions (or edge://extensions)"
+    Write-Host "  2. Enable Developer mode"
+    Write-Host "  3. Load the extension\ directory"
+    Write-Host "  4. Copy the ID (a 32-char string like abcdefghijklmnopqrstuvwxyz123456)"
+    Write-Host ""
+    $ExtensionId = Read-Host "Paste the extension ID"
+}
+
+if (-not $ExtensionId) {
+    Write-Error "Extension ID is required for $Browser"
+    exit 1
+}
+
+# Build the manifest.
+$ManifestPath = Join-Path $ExtDir "lagestroemia_native_manifest.json"
+
+if ($Browser -eq "firefox") {
+    $Manifest = @{
+        name = "lagestroemia"
+        description = "Lagestroemia local proxy server for chat.z.ai"
+        path = $WrapperBat
+        type = "stdio"
+        allowed_extensions = @($ExtensionId)
+    } | ConvertTo-Json -Depth 5
+} else {
+    $Manifest = @{
+        name = "lagestroemia"
+        description = "Lagestroemia local proxy server for chat.z.ai"
+        path = $WrapperBat
+        type = "stdio"
+        allowed_origins = @("chrome-extension://$ExtensionId/")
+    } | ConvertTo-Json -Depth 5
+}
+
+$Manifest | Set-Content $ManifestPath -Encoding UTF8
+
+# Determine the registry key.
 switch ($Browser) {
     "chrome" {
         $RegKey = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\lagestroemia"
@@ -57,22 +98,19 @@ switch ($Browser) {
 }
 
 # Create the registry key and set the default value to the manifest path.
-$ManifestFile = Join-Path $ExtDir "lagestroemia_native_manifest.json"
-$Manifest | Set-Content $ManifestFile -Encoding UTF8
-
 if (-not (Test-Path $RegKey)) {
     New-Item -Path $RegKey -Force | Out-Null
 }
-Set-ItemProperty -Path $RegKey -Name "(Default)" -Value $ManifestFile
+Set-ItemProperty -Path $RegKey -Name "(Default)" -Value $ManifestPath
 
+Write-Host ""
 Write-Host "✅ Native messaging host registered for $Browser" -ForegroundColor Green
-Write-Host "   Manifest: $ManifestFile"
+Write-Host "   Manifest: $ManifestPath"
 Write-Host "   Wrapper:  $WrapperBat"
 Write-Host "   Registry: $RegKey"
+Write-Host "   Extension ID: $ExtensionId"
 Write-Host ""
-Write-Host "The local HTTP server will start automatically when the extension"
-Write-Host "connects. It listens on http://127.0.0.1:8081"
-Write-Host ""
-Write-Host "Test with:"
+Write-Host "After reloading the extension, check:" -ForegroundColor Cyan
 Write-Host "  curl http://127.0.0.1:8081/health"
-Write-Host "  curl http://127.0.0.1:8081/v1/models"
+Write-Host ""
+Write-Host "You should see a 🌺 badge on chat.z.ai saying 'Server on :8081'" -ForegroundColor Cyan

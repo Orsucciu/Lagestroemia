@@ -94,6 +94,8 @@ function connectNative() {
       if (msg.type === 'nativeReady') {
         nativeReady = true;
         console.log('[bg] Native host ready on port', msg.port);
+        // Broadcast to all content scripts.
+        broadcastNativeStatus(true);
         return;
       }
 
@@ -132,17 +134,16 @@ function connectNative() {
                 error: api.runtime.lastError.message,
               });
             }
-            // The content script will send streaming chunks via
-            // chrome.runtime.sendMessage — we relay those to the native host.
           });
         });
       }
     });
 
     nativePort.onDisconnect.addListener(() => {
-      console.log('[bg] Native host disconnected');
+      console.log('[bg] Native host disconnected:', api.runtime.lastError?.message);
       nativePort = null;
       nativeReady = false;
+      broadcastNativeStatus(false);
       // Try to reconnect after 5 seconds.
       setTimeout(connectNative, 5000);
     });
@@ -150,9 +151,19 @@ function connectNative() {
     console.log('[bg] Connected to native host');
   } catch (e) {
     console.log('[bg] Failed to connect to native host:', e);
+    broadcastNativeStatus(false);
     // Retry after 10 seconds.
     setTimeout(connectNative, 10000);
   }
+}
+
+function broadcastNativeStatus(connected) {
+  // Send status to all chat.z.ai tabs (updates the badge).
+  api.tabs.query({ url: 'https://chat.z.ai/*' }, (tabs) => {
+    for (const tab of tabs) {
+      api.tabs.sendMessage(tab.id, { type: 'nativeStatus', connected: connected }).catch(() => {});
+    }
+  });
 }
 
 function sendToNative(msg) {
