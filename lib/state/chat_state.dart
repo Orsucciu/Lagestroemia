@@ -79,10 +79,21 @@ class ChatListNotifier extends AsyncNotifier<List<Chat>> {
   }
 
   Future<void> deleteChat(String id) async {
-    final repo = await ref.watch(chatRepositoryProvider.future);
+    final repo = await ref.read(chatRepositoryProvider.future);
     await repo.delete(id);
     final current = state.valueOrNull ?? const <Chat>[];
     state = AsyncData(current.where((c) => c.id != id).toList(growable: false));
+    // If the deleted chat was the currently-open chat, clear the
+    // current chat id so the chat screen doesn't try to load a
+    // non-existent chat (which would crash).
+    final currentId = ref.read(currentChatIdProvider);
+    if (currentId == id) {
+      ref.read(currentChatIdProvider.notifier).state = null;
+    }
+    // Also invalidate the messages provider so it doesn't hold stale
+    // references to the deleted chat's messages.
+    ref.invalidate(currentChatMessagesProvider);
+    ref.invalidate(currentChatProvider);
   }
 
   void _replaceInList(Chat updated) {

@@ -3,6 +3,8 @@
 // Android, iOS, Windows, and Web. On Linux/macOS, the parent file
 // (aliyun_captcha_platform.dart) uses a fallback instead.
 
+import 'dart:developer' as developer;
+
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter/material.dart';
 
@@ -46,6 +48,9 @@ class _CaptchaWebviewStateful extends StatefulWidget {
 
 class _CaptchaWebviewStatefulState extends State<_CaptchaWebviewStateful> {
   bool _loaded = false;
+  bool _error = false;
+  String _errorMsg = '';
+  InAppWebViewController? _controller;
 
   @override
   Widget build(BuildContext context) {
@@ -71,16 +76,30 @@ class _CaptchaWebviewStatefulState extends State<_CaptchaWebviewStateful> {
               transparentBackground: true,
               supportZoom: false,
               useShouldOverrideUrlLoading: false,
+              // Allow mixed content (the captcha SDK loads from
+              // alicdn.com over HTTPS, but some sub-resources may
+              // be loaded over HTTP).
+              allowFileAccessFromFileURLs: true,
+              allowUniversalAccessFromFileURLs: true,
             ),
             onWebViewCreated: (controller) {
+              _controller = controller;
               controller.addJavaScriptHandler(
                 handlerName: 'onCaptchaSuccess',
                 callback: (args) {
+                  developer.log('Captcha success: args=$args',
+                      name: 'captcha');
                   final param =
                       args.isEmpty ? '' : (args.first?.toString() ?? '');
                   if (param.isNotEmpty) {
-                    setState(() => _loaded = true);
+                    if (mounted) {
+                      setState(() => _loaded = true);
+                    }
                     widget.onSolved(param);
+                  } else {
+                    developer.log('Captcha success but param is empty',
+                        name: 'captcha');
+                    widget.onError?.call('Captcha returned empty param');
                   }
                 },
               );
@@ -90,12 +109,77 @@ class _CaptchaWebviewStatefulState extends State<_CaptchaWebviewStateful> {
                   final err = args.isEmpty
                       ? 'unknown'
                       : (args.first?.toString() ?? 'unknown');
+                  developer.log('Captcha error: $err', name: 'captcha');
+                  if (mounted) {
+                    setState(() {
+                      _error = true;
+                      _errorMsg = err;
+                    });
+                  }
                   widget.onError?.call(err);
                 },
               );
             },
+            onLoadStart: (controller, url) {
+              developer.log('WebView load start: $url', name: 'captcha');
+            },
+            onLoadStop: (controller, url) {
+              developer.log('WebView load stop: $url', name: 'captcha');
+              // The page has loaded. The flutterInAppWebViewPlatformReady
+              // event should fire soon, after which the JS handlers
+              // will work.
+            },
+            onReceivedError: (controller, request, error) {
+              developer.log('WebView error: ${error.description}',
+                  name: 'captcha');
+              if (mounted) {
+                setState(() {
+                  _error = true;
+                  _errorMsg = error.description;
+                });
+              }
+              widget.onError?.call(error.description);
+            },
+            onConsoleMessage: (controller, consoleMessage) {
+              developer.log('WebView console: ${consoleMessage.message}',
+                  name: 'captcha');
+            },
           ),
-          if (!_loaded)
+          if (_error)
+            Container(
+              color: Colors.red.withValues(alpha: 0.1),
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.error_outline, color: Colors.red),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Captcha failed to load: $_errorMsg',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: () {
+                          _controller?.reload();
+                          if (mounted) {
+                            setState(() {
+                              _error = false;
+                              _loaded = false;
+                            });
+                          }
+                        },
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else if (!_loaded)
             const Center(child: CircularProgressIndicator()),
         ],
       ),
