@@ -384,7 +384,15 @@ def main():
     # Start the HTTP server FIRST (before the stdin reader). This
     # ensures the server is immediately available even if the stdin
     # reader blocks (which it does on Windows when run standalone).
-    server = ThreadedHTTPServer(('127.0.0.1', PORT), ChatHandler)
+    try:
+        server = ThreadedHTTPServer(('127.0.0.1', PORT), ChatHandler)
+    except OSError as e:
+        # Port already in use — another instance is running.
+        print(f"[native] Port {PORT} already in use ({e}). "
+              f"Another instance may be running.", file=sys.stderr)
+        print("[native] Exiting. Close the other instance first.", file=sys.stderr)
+        sys.exit(1)
+
     print(f"[native] HTTP server listening on http://127.0.0.1:{PORT}", file=sys.stderr)
     print(f"[native] OpenAI-compatible API:", file=sys.stderr)
     print(f"[native]   GET  /v1/models", file=sys.stderr)

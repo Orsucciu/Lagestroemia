@@ -78,7 +78,8 @@ if ($Browser -eq "firefox") {
     } | ConvertTo-Json -Depth 5
 }
 
-$Manifest | Set-Content $ManifestPath -Encoding UTF8
+# Write manifest without BOM (Chrome/Edge reject JSON with BOM).
+[System.IO.File]::WriteAllText($ManifestPath, $Manifest, [System.Text.UTF8Encoding]::new($false))
 
 # Determine the registry key.
 switch ($Browser) {

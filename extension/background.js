@@ -86,7 +86,9 @@ let nativeReady = false;
 
 function connectNative() {
   try {
+    console.log('[bg] Attempting to connect to native host:', NATIVE_HOST_NAME);
     nativePort = api.runtime.connectNative(NATIVE_HOST_NAME);
+    console.log('[bg] connectNative() returned:', nativePort);
 
     nativePort.onMessage.addListener((msg) => {
       console.log('[bg] Native message:', msg.type);
@@ -140,7 +142,14 @@ function connectNative() {
     });
 
     nativePort.onDisconnect.addListener(() => {
-      console.log('[bg] Native host disconnected:', api.runtime.lastError?.message);
+      const err = api.runtime.lastError;
+      console.log('[bg] Native host DISCONNECTED:', err ? err.message : '(no error)');
+      console.log('[bg] This usually means:');
+      console.log('  - The native messaging host is not registered');
+      console.log('  - The manifest JSON is malformed');
+      console.log('  - The bat/sh wrapper path is wrong');
+      console.log('  - Python is not on PATH');
+      console.log('  - The extension ID in allowed_origins doesn\'t match');
       nativePort = null;
       nativeReady = false;
       broadcastNativeStatus(false);
@@ -148,9 +157,11 @@ function connectNative() {
       setTimeout(connectNative, 5000);
     });
 
-    console.log('[bg] Connected to native host');
+    console.log('[bg] Connected to native host (port object created)');
+    console.log('[bg] Waiting for nativeReady message...');
   } catch (e) {
     console.log('[bg] Failed to connect to native host:', e);
+    console.log('[bg] Make sure you ran scripts/install-native.ps1');
     broadcastNativeStatus(false);
     // Retry after 10 seconds.
     setTimeout(connectNative, 10000);
