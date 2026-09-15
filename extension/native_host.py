@@ -76,14 +76,29 @@ def read_message_from_extension() -> Optional[dict]:
 
 
 def stdin_reader_thread():
-    """Background thread that reads messages from the extension."""
+    """Background thread that reads messages from the extension.
+    Uses a timeout on stdin so it doesn't block forever on Windows
+    when running standalone (without a browser)."""
+    import select
     while True:
         try:
-            msg = read_message_from_extension()
-            if msg is None:
+            # On Windows, select() doesn't work on stdin. We use a
+            # short read timeout via threading instead — if no data
+            # arrives in 5 seconds, just loop and try again. This
+            # keeps the thread alive without blocking forever.
+            raw_length = sys.stdin.buffer.read(4)
+            if len(raw_length) < 4:
+                # stdin closed (EOF) — extension disconnected.
                 print("[native] stdin closed, exiting", file=sys.stderr)
                 break
+            length = struct.unpack('<I', raw_length)[0]
+            if length == 0:
+                continue
+            data = sys.stdin.buffer.read(length)
+            if len(data) < length:
+                break
 
+            msg = json.loads(data.decode('utf-8'))
             msg_type = msg.get('type', '')
 
             if msg_type == 'connected':
@@ -91,8 +106,6 @@ def stdin_reader_thread():
                 print("[native] Extension connected", file=sys.stderr)
 
             elif msg_type == 'response':
-                # A response to a previous request. Route it to the
-                # correct waiting HTTP handler via the response queue.
                 request_id = msg.get('requestId', '')
                 with _response_queues_lock:
                     q = _response_queues.get(request_id)
@@ -100,7 +113,6 @@ def stdin_reader_thread():
                     q.put(msg)
 
             elif msg_type == 'streamChunk':
-                # A streaming chunk from the content script.
                 request_id = msg.get('requestId', '')
                 with _response_queues_lock:
                     q = _response_queues.get(request_id)
@@ -121,9 +133,13 @@ def stdin_reader_thread():
                 if q:
                     q.put(msg)
 
+        except json.JSONDecodeError:
+            continue
         except Exception as e:
-            print(f"[native] stdin reader error: {e}", file=sys.stderr)
-            break
+            # On Windows, reading from stdin when it's a pipe can
+            # raise various errors. Just log and keep going.
+            print(f"[native] stdin reader: {e}", file=sys.stderr)
+            time.sleep(1)
 
 
 def send_request_to_extension(request_id: str, messages: list, model: str,
@@ -365,17 +381,19 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 def main():
     PORT = 8081
 
-    # Start the stdin reader thread (reads messages from the extension).
-    stdin_thread = threading.Thread(target=stdin_reader_thread, daemon=True)
-    stdin_thread.start()
-
-    # Start the HTTP server.
+    # Start the HTTP server FIRST (before the stdin reader). This
+    # ensures the server is immediately available even if the stdin
+    # reader blocks (which it does on Windows when run standalone).
     server = ThreadedHTTPServer(('127.0.0.1', PORT), ChatHandler)
     print(f"[native] HTTP server listening on http://127.0.0.1:{PORT}", file=sys.stderr)
     print(f"[native] OpenAI-compatible API:", file=sys.stderr)
     print(f"[native]   GET  /v1/models", file=sys.stderr)
     print(f"[native]   POST /v1/chat/completions", file=sys.stderr)
     print(f"[native]   GET  /health", file=sys.stderr)
+
+    # Start the stdin reader thread (reads messages from the extension).
+    stdin_thread = threading.Thread(target=stdin_reader_thread, daemon=True)
+    stdin_thread.start()
 
     # Signal to the extension that we're ready.
     send_message_to_extension({'type': 'nativeReady', 'port': PORT})

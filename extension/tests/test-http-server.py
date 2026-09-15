@@ -14,12 +14,14 @@ import os
 def test_server():
     # Start the server in a subprocess. DON'T send a fake "connected"
     # message — we want to test the 503 path (extension not connected).
+    ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    native_host = os.path.join(ext_dir, 'native_host.py')
     proc = subprocess.Popen(
-        [sys.executable, 'native_host.py'],
+        [sys.executable, native_host],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=ext_dir,
     )
 
     # Give the server time to start.
