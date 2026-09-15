@@ -55,12 +55,16 @@ _response_queues_lock = threading.Lock()
 
 def send_message_to_extension(msg: dict) -> None:
     """Send a JSON message to the browser extension via stdout."""
-    data = json.dumps(msg).encode('utf-8')
-    with _stdout_lock:
-        # Native Messaging protocol: 4-byte little-endian length + payload
-        sys.stdout.buffer.write(struct.pack('<I', len(data)))
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+    try:
+        data = json.dumps(msg).encode('utf-8')
+        with _stdout_lock:
+            # Native Messaging protocol: 4-byte little-endian length + payload
+            sys.stdout.buffer.write(struct.pack('<I', len(data)))
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+        print(f"[native] Sent to extension: {msg.get('type', '?')} ({len(data)} bytes)", file=sys.stderr)
+    except Exception as e:
+        print(f"[native] Failed to send to extension: {e}", file=sys.stderr)
 
 
 def read_message_from_extension() -> Optional[dict]:
