@@ -7,7 +7,8 @@
     "storage",
     "activeTab",
     "scripting",
-    "sidePanel"
+    "sidePanel",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "https://chat.z.ai/*",

@@ -450,30 +450,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[content] Message:', message.type);
 
   if (message.type === 'sendChat') {
-    const { messages, model, options } = message;
+    const { messages, model, options, requestId } = message;
     const chunks = [];
 
     sendChatWithRetry(
       messages, model, options || {},
-      // onChunk — collect chunks AND forward to side panel in real time.
+      // onChunk — collect chunks AND forward to side panel + native host.
       (chunk) => {
         chunks.push(chunk);
-        // Forward to the side panel for live streaming.
+        // Forward to the side panel for live streaming + native host.
         chrome.runtime.sendMessage({
           type: 'chatChunk',
+          requestId: requestId,
           chunk: chunk,
-        }).catch(() => {}); // ignore if side panel isn't listening
+        }).catch(() => {});
       },
       // onStatus
       (status) => {
         chrome.runtime.sendMessage({
           type: 'chatStatus',
+          requestId: requestId,
           status: status,
         }).catch(() => {});
       }
     ).then((result) => {
+      // Stream complete — notify the background script.
+      chrome.runtime.sendMessage({
+        type: 'chatComplete',
+        requestId: requestId,
+      }).catch(() => {});
       sendResponse({ ok: true, chunks: chunks });
     }).catch((err) => {
+      chrome.runtime.sendMessage({
+        type: 'chatError',
+        requestId: requestId,
+        error: err.message,
+      }).catch(() => {});
       sendResponse({ ok: false, error: err.message });
     });
     return true; // async response
