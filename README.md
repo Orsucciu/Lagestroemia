@@ -38,19 +38,30 @@ engine (Skia/Impeller).
 
 ### Windows
 
-**Additional prerequisite**: [Nuget](https://www.nuget.org/downloads) must
-be installed and on your PATH. The `flutter_inappwebview_windows` plugin
-(required for the Aliyun captcha widget in guest mode) uses Nuget to
-fetch the WebView2 runtime during the CMake build.
+**Additional prerequisites**:
+
+1. **Nuget** — must be installed and on your PATH. The
+   `flutter_inappwebview_windows` plugin (required for the Aliyun captcha
+   widget in guest mode) uses Nuget to fetch the WebView2 runtime during
+   the CMake build.
+   ```sh
+   winget install Microsoft.Nuget
+   ```
+
+2. **C++ ATL (Active Template Library)** — must be installed as part of
+   Visual Studio. The `flutter_secure_storage_windows` plugin requires
+   `atlstr.h`, which is only available when ATL is installed.
+   - Open **Visual Studio Installer** (Start menu → search "Visual Studio
+     Installer")
+   - Click **Modify** on your Visual Studio 2022 installation
+   - Go to **Individual components** tab
+   - Search for **"ATL"**
+   - Check **"C++ ATL for latest v143 build tools (x86 & x64)"**
+   - Click **Modify** to install
+   - Restart your terminal after installation
 
 ```sh
-# Install Nuget via winget (Windows Package Manager)
-winget install Microsoft.Nuget
-
-# Or download nuget.exe directly and add it to your PATH:
-# https://www.nuget.org/downloads
-
-# Then build:
+# After installing Nuget + ATL:
 flutter build windows --release
 # Or run in debug mode:
 flutter run -d windows
@@ -58,6 +69,9 @@ flutter run -d windows
 
 If you get "Nuget is not installed!", make sure `nuget.exe` is
 accessible from the command line (`nuget help` should work).
+
+If you get "Cannot open include file: 'atlstr.h'", install the ATL
+component as described above.
 
 ### Web
 
