@@ -180,7 +180,35 @@ class _CaptchaWebviewStatefulState extends State<_CaptchaWebviewStateful> {
               ),
             )
           else if (!_loaded)
-            const Center(child: CircularProgressIndicator()),
+            // Show a small loading indicator at the TOP of the webview
+            // (not covering the whole area) so it doesn't block touch
+            // events on the captcha widget below.
+            Positioned(
+              top: 4,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      ),
+                      SizedBox(width: 8),
+                      Text('Loading…', style: TextStyle(color: Colors.white, fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

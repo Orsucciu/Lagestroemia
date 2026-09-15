@@ -70,22 +70,24 @@ class _CaptchaWidgetState extends State<CaptchaWidget> {
 
   @override
   Widget build(BuildContext context) {
-    // On ALL platforms, show the fallback with a "Open chat.z.ai" button
-    // + manual paste field. The InAppWebView approach has been unreliable
-    // across multiple sessions (WebView2 initialization issues on Windows,
-    // iframe sandbox on Web, no webview on Linux/macOS). The manual
-    // approach works reliably everywhere.
-    //
-    // The user opens chat.z.ai in their system browser, solves the
-    // captcha there, copies the captcha_verify_param from DevTools,
-    // and pastes it below. This avoids all origin-binding issues
-    // because the captcha is solved from chat.z.ai's actual origin.
-    return _CaptchaFallback(
-      height: widget.height,
+    // On web + Linux + macOS: show the fallback (manual paste / popup)
+    // On Windows + Android + iOS: use the InAppWebView (which renders
+    // the Aliyun captcha SDK directly)
+    if (kIsWeb || PlatformInfo.isLinux || PlatformInfo.isMacOS) {
+      return _CaptchaFallback(
+        height: widget.height,
+        onSolved: widget.onSolved,
+        onError: widget.onError,
+        onOpenPopup: kIsWeb ? _openPopup : _openExternalBrowser,
+        popupOpening: _popupOpening,
+      );
+    }
+
+    // On Windows + Android + iOS, use the real webview.
+    return CaptchaWebviewImplReal(
       onSolved: widget.onSolved,
       onError: widget.onError,
-      onOpenPopup: kIsWeb ? _openPopup : _openExternalBrowser,
-      popupOpening: _popupOpening,
+      height: widget.height,
     );
   }
 
