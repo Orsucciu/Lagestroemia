@@ -155,11 +155,51 @@ function buildRequestMeta(userId, token) {
   return { timestamp, requestId, sortedPayload, params };
 }
 
-// ---- Extract the guest token from cookies ----
-function getGuestTokenFromCookie() {
-  // chat.z.ai stores the JWT in a cookie named "token"
-  const match = document.cookie.match(/(?:^|;\s*)token=([^;]+)/);
-  return match ? match[1] : null;
+// ---- Extract the guest token ----
+// Tries cookie first, falls back to fetching from the API.
+let cachedToken = null;
+let cachedTokenTime = 0;
+
+async function getGuestToken() {
+  // Check cache (valid for 30 minutes).
+  if (cachedToken && (Date.now() - cachedTokenTime) < 30 * 60 * 1000) {
+    return cachedToken;
+  }
+
+  // Try cookie first (fastest).
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)token=([^;]+)/);
+    if (match && match[1]) {
+      cachedToken = match[1];
+      cachedTokenTime = Date.now();
+      console.log('[content] Got token from cookie');
+      return cachedToken;
+    }
+  } catch (e) {
+    console.log('[content] Cookie access failed:', e);
+  }
+
+  // Fallback: fetch from the API (same-origin, no CORS issues).
+  console.log('[content] No cookie token, fetching from API...');
+  const resp = await fetch('https://chat.z.ai/api/v1/auths/', {
+    method: 'GET',
+    headers: {
+      'Accept': 'application/json',
+      'X-FE-Version': FE_VERSION,
+    },
+    credentials: 'include',
+  });
+  if (!resp.ok) {
+    throw new Error(`Guest token fetch failed: HTTP ${resp.status}`);
+  }
+  const data = await resp.json();
+  if (!data.token) {
+    throw new Error('No token in API response');
+  }
+  cachedToken = data.token;
+  cachedTokenTime = Date.now();
+  console.log('[content] Got token from API');
+  return cachedToken;
 }
 
 // ---- Extract user ID from JWT ----
@@ -174,9 +214,9 @@ function getUserIdFromToken(token) {
 
 // ---- Send a chat completion request (with auto-retry) ----
 async function sendChatCompletion(messages, model, options = {}) {
-  const token = getGuestTokenFromCookie();
+  const token = await getGuestToken();
   if (!token) {
-    throw new Error('No guest token found. Make sure you are signed in on chat.z.ai.');
+    throw new Error('Could not get guest token. Make sure you are signed in on chat.z.ai.');
   }
   const userId = getUserIdFromToken(token);
   const promptText = extractPromptText(messages);
@@ -550,13 +590,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'getModels') {
-    fetch(MODELS_URL, {
-      headers: {
-        'Authorization': `Bearer ${getGuestTokenFromCookie()}`,
-        'X-FE-Version': FE_VERSION,
-      },
-      credentials: 'include',
-    })
+    getGuestToken().then(token =>
+      fetch(MODELS_URL, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'X-FE-Version': FE_VERSION,
+        },
+        credentials: 'include',
+      })
+    )
       .then(r => r.json())
       .then(data => sendResponse({ ok: true, models: data.data || [] }))
       .catch(err => sendResponse({ ok: false, error: err.message }));
