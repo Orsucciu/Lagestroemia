@@ -88,7 +88,7 @@ try {
                     Write-Host -NoNewline $chunk.choices[0].delta.content
                 }
             } catch {
-                Write-Info "Parse error on line $lineNum: $data"
+                Write-Info "Parse error on line ${lineNum}: ${data}"
             }
         }
     }
