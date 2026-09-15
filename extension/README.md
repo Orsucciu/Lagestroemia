@@ -52,15 +52,46 @@ CORS + origin-binding issues that the Flutter app faces.
 - **Enter to send**: Shift+Enter for newline
 - **Clean UI**: side panel with chat bubbles
 
-## Installation (development)
+## Installation
 
-1. Open `chrome://extensions` (or `edge://extensions` in Edge)
-2. Enable **Developer mode** (toggle in the top-right)
-3. Click **Load unpacked**
-4. Select the `extension/` directory
+### Chrome / Edge
+
+1. Run `scripts/build-extension.sh chrome` (or just load `extension/` directly)
+2. Open `chrome://extensions` (or `edge://extensions` in Edge)
+3. Enable **Developer mode** (toggle in the top-right)
+4. Click **Load unpacked**
+5. Select the `extension/` directory (or `scripts/extension-chrome/`)
+6. Open https://chat.z.ai in a tab (sign in as guest — it's automatic)
+7. Click the Lagestroemia toolbar icon to open the side panel
+8. Type a message and press Enter
+
+### Firefox
+
+Firefox 121+ is required (for Manifest V3 + `sidebar_action` support).
+
+1. Run `scripts/build-extension.sh firefox` (creates `scripts/extension-firefox/`)
+2. Open `about:debugging` in Firefox
+3. Click **This Firefox** → **Load Temporary Add-on**
+4. Select `scripts/extension-firefox/manifest.json`
 5. Open https://chat.z.ai in a tab (sign in as guest — it's automatic)
-6. Click the Lagestroemia toolbar icon to open the side panel
+6. Press `Ctrl+Shift+B` to toggle the sidebar (or use the toolbar button)
 7. Type a message and press Enter
+
+### Build script
+
+```sh
+# Build for a specific browser:
+scripts/build-extension.sh chrome
+scripts/build-extension.sh firefox
+
+# Build for both:
+scripts/build-extension.sh all
+```
+
+The build script copies the shared files (background.js, content.js,
+sidepanel.html/js, icons) and swaps the appropriate manifest:
+- `manifest.json` — Chrome/Edge (uses `side_panel` + `service_worker`)
+- `manifest.firefox.json` — Firefox (uses `sidebar_action` + `background.scripts`)
 
 ## Architecture
 
@@ -107,3 +138,16 @@ Both share the same:
 - Request body format (signature_prompt, features, variables, etc.)
 - SSE parsing logic
 - Auto-retry strategy
+
+## Browser compatibility
+
+| Browser | Support | Sidebar API | Notes |
+|---------|---------|-------------|-------|
+| Chrome 114+ | ✅ | `chrome.sidePanel` | Full support |
+| Edge 114+ | ✅ | `chrome.sidePanel` | Full support |
+| Firefox 121+ | ✅ | `browser.sidebarAction` | Uses `background.scripts` instead of `service_worker` |
+| Safari | ⚠️ Not tested | `browser.sidebarAction` | Should work with minor adjustments |
+
+The extension auto-detects the browser at runtime:
+- If `browser.sidebarAction` exists → Firefox mode
+- Otherwise → Chrome/Edge mode (uses `chrome.sidePanel`)

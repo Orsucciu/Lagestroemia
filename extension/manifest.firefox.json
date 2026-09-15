@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "Lagestroemia for chat.z.ai",
+  "version": "0.1.0",
+  "description": "A powerful chat client for chat.z.ai with auto-retry, model switching, and conversation management.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "lagestroemia@orsucciu.github.io",
+      "strict_min_version": "121.0"
+    }
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chat.z.ai/*",
+    "https://*.chat.z.ai/*",
+    "https://o.alicdn.com/*"
+  ],
+  "action": {
+    "default_title": "Open Lagestroemia",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "sidebar_action": {
+    "default_title": "Lagestroemia",
+    "default_panel": "sidepanel.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.z.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

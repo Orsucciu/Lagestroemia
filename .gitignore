@@ -36,3 +36,5 @@ Thumbs.db
 **/ephemeral/
 e2e/test-results/
 e2e/node_modules/
+scripts/extension-chrome/
+scripts/extension-firefox/
