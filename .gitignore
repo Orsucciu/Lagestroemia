@@ -28,3 +28,5 @@ flutter/
 Thumbs.db
 .DS_Store
 **/ephemeral/
+e2e/test-results/
+e2e/node_modules/

@@ -514,36 +514,41 @@ class _ToggleChip extends StatelessWidget {
     final fgColor = enabled
         ? (value ? colorScheme.onPrimaryContainer : colorScheme.onSurface)
         : colorScheme.onSurfaceVariant.withValues(alpha: 0.4);
-    return Tooltip(
-      message: tooltip,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-        decoration: BoxDecoration(
-          color: enabled && value
-              ? colorScheme.primaryContainer
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(icon, size: 16, color: fgColor),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: theme.textTheme.bodySmall?.copyWith(color: fgColor),
-            ),
-            const SizedBox(width: 4),
-            SizedBox(
-              width: 28,
-              height: 18,
-              child: Switch(
-                value: value,
-                onChanged: enabled ? onChanged : null,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    return Semantics(
+      label: label,
+      toggled: value,
+      enabled: enabled,
+      child: Tooltip(
+        message: tooltip,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: enabled && value
+                ? colorScheme.primaryContainer
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(icon, size: 16, color: fgColor),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: theme.textTheme.bodySmall?.copyWith(color: fgColor),
               ),
-            ),
-          ],
+              const SizedBox(width: 4),
+              SizedBox(
+                width: 28,
+                height: 18,
+                child: Switch(
+                  value: value,
+                  onChanged: enabled ? onChanged : null,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1023,43 +1028,46 @@ class _ComposerState extends ConsumerState<_Composer> {
                   onPressed: composer.streaming ? null : _pickFile,
                 ),
                 Expanded(
-                  child: Focus(
-                    onKeyEvent: (node, event) {
-                      if (composer.streaming) return KeyEventResult.ignored;
-                      final settings = ref.read(settingsStateProvider);
-                      final isEnter = event.physicalKey == PhysicalKeyboardKey.enter ||
-                          event.physicalKey == PhysicalKeyboardKey.numpadEnter;
-                      if (!isEnter) return KeyEventResult.ignored;
-                      final isShift = HardwareKeyboard.instance.isShiftPressed;
-                      final isCtrl = HardwareKeyboard.instance.isControlPressed ||
-                          HardwareKeyboard.instance.isMetaPressed;
-                      if (settings.sendOnEnter) {
-                        // Enter sends, Shift+Enter = newline
-                        if (isShift) return KeyEventResult.ignored;
-                        if (event is KeyDownEvent) {
-                          _send();
+                  child: Semantics(
+                    label: 'Message',
+                    textField: true,
+                    hint: 'Type a message and press Enter to send',
+                    child: Focus(
+                      onKeyEvent: (node, event) {
+                        if (composer.streaming) return KeyEventResult.ignored;
+                        final settings = ref.read(settingsStateProvider);
+                        final isEnter = event.physicalKey == PhysicalKeyboardKey.enter ||
+                            event.physicalKey == PhysicalKeyboardKey.numpadEnter;
+                        if (!isEnter) return KeyEventResult.ignored;
+                        final isShift = HardwareKeyboard.instance.isShiftPressed;
+                        final isCtrl = HardwareKeyboard.instance.isControlPressed ||
+                            HardwareKeyboard.instance.isMetaPressed;
+                        if (settings.sendOnEnter) {
+                          if (isShift) return KeyEventResult.ignored;
+                          if (event is KeyDownEvent) {
+                            _send();
+                          }
+                          return KeyEventResult.handled;
+                        } else {
+                          if (!isCtrl) return KeyEventResult.ignored;
+                          if (event is KeyDownEvent) {
+                            _send();
+                          }
+                          return KeyEventResult.handled;
                         }
-                        return KeyEventResult.handled;
-                      } else {
-                        // Ctrl+Enter sends, Enter = newline
-                        if (!isCtrl) return KeyEventResult.ignored;
-                        if (event is KeyDownEvent) {
-                          _send();
-                        }
-                        return KeyEventResult.handled;
-                      }
-                    },
-                    child: TextField(
-                      controller: _controller,
-                      minLines: 1,
-                      maxLines: 6,
-                      decoration: InputDecoration(
-                        hintText: l.chatComposerPlaceholder,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                      },
+                      child: TextField(
+                        controller: _controller,
+                        minLines: 1,
+                        maxLines: 6,
+                        decoration: InputDecoration(
+                          hintText: l.chatComposerPlaceholder,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
+                        enabled: !composer.streaming,
                       ),
-                      enabled: !composer.streaming,
                     ),
                   ),
                 ),
