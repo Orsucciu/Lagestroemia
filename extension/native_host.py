@@ -403,7 +403,9 @@ def main():
     stdin_thread = threading.Thread(target=stdin_reader_thread, daemon=True)
     stdin_thread.start()
 
-    # Signal to the extension that we're ready.
+    # Signal to the extension that we're ready. If we can send via
+    # stdout, the extension IS connected (the browser launched us).
+    _extension_connected.set()
     send_message_to_extension({'type': 'nativeReady', 'port': PORT})
 
     try:
