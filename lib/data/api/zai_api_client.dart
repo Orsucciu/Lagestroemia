@@ -331,6 +331,23 @@ class ZaiApiClient {
       final fullUrl = '$path?$queryStr';
       extraHeaders['X-Signature'] = signature;
 
+      // Debug: log the full request details.
+      _log.info('chat.z.ai request:');
+      _log.info('  URL: $fullUrl');
+      _log.info('  X-Signature: $signature');
+      _log.info('  sortedPayload: ${meta.sortedPayload}');
+      _log.info('  promptText: $promptText');
+      _log.info('  timestamp: ${meta.timestamp}');
+      _log.info('  userId: $userId');
+      _log.info('  captchaVerifyParam: ${_captchaVerifyParam != null ? "${_captchaVerifyParam!.substring(0, 20)}..." : "null"}');
+      _log.info('  body: ${jsonEncode(body)}');
+      // ignore: avoid_print
+      print('[API] chat.z.ai request URL: $fullUrl');
+      // ignore: avoid_print
+      print('[API] X-Signature: $signature');
+      // ignore: avoid_print
+      print('[API] Body: ${jsonEncode(body)}');
+
       Response<ResponseBody> response;
       try {
         response = await _dio.post<ResponseBody>(
@@ -384,13 +401,28 @@ class ZaiApiClient {
   /// Processes the streaming response, yielding [ChatStreamChunk]s.
   Stream<ChatStreamChunk> _processStreamResponse(
       Response<ResponseBody> response) async* {
+    // Log the HTTP status code for debugging.
+    final statusCode = response.statusCode;
+    _log.info('chat.z.ai response: HTTP $statusCode');
+    // ignore: avoid_print
+    print('[API] Response: HTTP $statusCode');
+    // Log response headers.
+    final respHeaders = response.headers.map;
+    _log.info('  response headers: $respHeaders');
+
     final stream =
         response.data?.stream ?? const Stream<List<int>>.empty();
     final decoded = _utf8Decode(stream);
     await for (final event in _sseEvents(decoded)) {
       if (event == '[DONE]') {
+        // ignore: avoid_print
+        print('[API] SSE: [DONE]');
         return;
       }
+      // Log the raw SSE event for debugging.
+      // ignore: avoid_print
+      print('[API] SSE event: ${event.length > 200 ? "${event.substring(0, 200)}..." : event}');
+
       final map = jsonDecode(event) as Map<String, Object?>;
 
       // chat.z.ai wraps the payload in {"type": "chat:completion", "data": {...}}

@@ -324,6 +324,13 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
     );
 
     final client = _ref.read(apiClientProvider);
+    // Log whether the captcha param is present — this is critical for
+    // debugging the retry-after-captcha flow.
+    final captchaParam = _ref.read(captchaVerifyParamProvider);
+    _debugLog('[CHAT] send(): captchaVerifyParam present: ${captchaParam != null}');
+    if (captchaParam != null) {
+      _debugLog('[CHAT] send(): captchaVerifyParam: ${captchaParam.substring(0, captchaParam.length > 30 ? 30 : captchaParam.length)}...');
+    }
     if (client == null) {
       _debugLog('[CHAT] send(): apiClient is null — not signed in');
       state = state.copyWith(
@@ -494,7 +501,13 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
               autoRetryAttempt: 0,
               autoRetryNextDelaySecs: 0,
             );
+            // Delete BOTH the assistant placeholder AND the user
+            // message we just persisted. When setCaptchaAndRetry
+            // re-calls send(), it will re-persist the user message
+            // from the stashed input — without this, we'd get
+            // duplicate user messages in the DB.
             await msgRepo.delete(assistantId);
+            await msgRepo.delete(userMessage.id);
             _ref.invalidate(currentChatMessagesProvider);
             return;
           }
