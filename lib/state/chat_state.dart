@@ -488,7 +488,15 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
           final isCaptcha =
               code == 'FRONTEND_CAPTCHA_REQUIRED' ||
               msg.toLowerCase().contains('captcha');
-          if (isCaptcha) {
+          // Check if this is a "verify_failed" captcha error, which
+          // means the captcha param was rejected by Aliyun's
+          // verification server. On web, this happens because the
+          // captcha was solved from a different origin than chat.z.ai.
+          // We detect this from the error message.
+          final isVerifyFailed = msg.toLowerCase().contains('verify_failed') ||
+              msg.toLowerCase().contains('verification failed');
+          if (isCaptcha && !isVerifyFailed) {
+            // First-time captcha required — show the captcha prompt.
             _debugLog('[CHAT] send(): captcha required — stashing input for retry');
             _stashedSend = _StashedSend(
               input: text,
@@ -506,6 +514,38 @@ class ChatComposerNotifier extends StateNotifier<ChatComposerState> {
             // re-calls send(), it will re-persist the user message
             // from the stashed input — without this, we'd get
             // duplicate user messages in the DB.
+            await msgRepo.delete(assistantId);
+            await msgRepo.delete(userMessage.id);
+            _ref.invalidate(currentChatMessagesProvider);
+            return;
+          }
+          if (isCaptcha && isVerifyFailed) {
+            // Captcha was solved but the param was rejected by Aliyun's
+            // verification server. On web, this is because the captcha
+            // was solved from a different origin (localhost) than
+            // chat.z.ai. Show a clear error instead of re-prompting.
+            _debugLog('[CHAT] send(): captcha verify_failed — origin mismatch');
+            state = state.copyWith(
+              streaming: false,
+              isSending: false,
+              captchaRequired: false,
+              error: ApiError(
+                message: 'Captcha verification failed. The captcha was '
+                    'solved but chat.z.ai rejected it because it was not '
+                    'solved from chat.z.ai\'s origin.\n\n'
+                    'On Web, guest mode captcha cannot work due to '
+                    'Aliyun\'s origin verification.\n\n'
+                    'Solutions:\n'
+                    '• Use API-key mode (Settings → Account → I have a '
+                    'z.ai API key) — no captcha needed\n'
+                    '• Use the desktop app (Windows/Linux) — the in-app '
+                    'webview solves the captcha from the correct origin',
+                code: code,
+                kind: ApiErrorKind.badRequest,
+              ),
+              autoRetryAttempt: 0,
+              autoRetryNextDelaySecs: 0,
+            );
             await msgRepo.delete(assistantId);
             await msgRepo.delete(userMessage.id);
             _ref.invalidate(currentChatMessagesProvider);

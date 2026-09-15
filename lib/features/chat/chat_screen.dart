@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io' show File;
 import 'dart:typed_data' show Uint8List;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData, HardwareKeyboard, KeyEventResult, KeyDownEvent, PhysicalKeyboardKey;
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -148,7 +149,11 @@ class ChatScreen extends ConsumerWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Guest mode — free, captcha required per session',
+                      kIsWeb
+                          ? 'Guest mode on Web — captcha is blocked by '
+                            'Aliyun origin verification. Use API-key mode '
+                            '(Settings → Account) or the desktop app.'
+                          : 'Guest mode — free, captcha required per session',
                       style: Theme.of(context).textTheme.labelSmall,
                     ),
                   ),
