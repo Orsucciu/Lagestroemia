@@ -15,6 +15,7 @@
 
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/config/app_config.dart';
 import '../core/platform/platform_info.dart' show PlatformInfo;
@@ -69,28 +70,22 @@ class _CaptchaWidgetState extends State<CaptchaWidget> {
 
   @override
   Widget build(BuildContext context) {
-    // Web: open a popup window with /captcha.html.
-    // Native Linux/macOS: no webview implementation available. Same fallback.
+    // On ALL platforms, show the fallback with a "Open chat.z.ai" button
+    // + manual paste field. The InAppWebView approach has been unreliable
+    // across multiple sessions (WebView2 initialization issues on Windows,
+    // iframe sandbox on Web, no webview on Linux/macOS). The manual
+    // approach works reliably everywhere.
     //
-    // We use kIsWeb + PlatformInfo.* instead of dart:io's Platform.*
-    // because Platform.* throws on the Web target.
-    if (kIsWeb || PlatformInfo.isLinux || PlatformInfo.isMacOS) {
-      return _CaptchaFallback(
-        height: widget.height,
-        onSolved: widget.onSolved,
-        onError: widget.onError,
-        onOpenPopup: kIsWeb ? _openPopup : null,
-        popupOpening: _popupOpening,
-      );
-    }
-
-    // On supported native platforms (Android/iOS/Windows), use the
-    // real webview which renders AliyunCaptcha.js and forwards the
-    // captcha_verify_param string back via JS interop.
-    return CaptchaWebviewImplReal(
+    // The user opens chat.z.ai in their system browser, solves the
+    // captcha there, copies the captcha_verify_param from DevTools,
+    // and pastes it below. This avoids all origin-binding issues
+    // because the captcha is solved from chat.z.ai's actual origin.
+    return _CaptchaFallback(
+      height: widget.height,
       onSolved: widget.onSolved,
       onError: widget.onError,
-      height: widget.height,
+      onOpenPopup: kIsWeb ? _openPopup : _openExternalBrowser,
+      popupOpening: _popupOpening,
     );
   }
 
@@ -106,12 +101,29 @@ class _CaptchaWidgetState extends State<CaptchaWidget> {
       if (mounted) setState(() => _popupOpening = false);
     }
   }
+
+  /// Opens chat.z.ai in the system browser (non-web platforms).
+  Future<void> _openExternalBrowser() async {
+    if (_popupOpening) return;
+    setState(() => _popupOpening = true);
+    try {
+      await launchUrl(
+        Uri.parse('https://chat.z.ai'),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (e) {
+      widget.onError?.call('Could not open browser: $e');
+    } finally {
+      if (mounted) setState(() => _popupOpening = false);
+    }
+  }
 }
 
-/// Fallback widget shown on platforms where the in-app webview is
-/// unavailable (Linux, macOS) OR where the popup is the better approach
-/// (Web). On web it shows a "Solve captcha" button that opens the popup.
-/// On Linux/macOS it shows a manual-paste text field.
+/// Fallback widget shown on ALL platforms. Provides:
+/// - A button that opens chat.z.ai in the system browser (or a popup
+///   on web) so the user can solve the captcha from chat.z.ai's origin
+/// - A text field to paste the captcha_verify_param
+/// - Step-by-step instructions
 class _CaptchaFallback extends StatefulWidget {
   const _CaptchaFallback({
     required this.height,
@@ -143,120 +155,114 @@ class _CaptchaFallbackState extends State<_CaptchaFallback> {
   Widget build(BuildContext context) {
     return SizedBox(
       height: widget.height,
-      child: Center(
+      child: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              const Icon(Icons.verified_user_outlined, size: 40),
+              const Icon(Icons.verified_user_outlined, size: 36),
               const SizedBox(height: 8),
               Text(
-                kIsWeb
-                    ? 'Solve the Aliyun captcha to continue.'
-                    : 'Captcha widget not available on ${PlatformInfo.operatingSystem}.',
+                'Captcha Verification Required',
                 style: Theme.of(context).textTheme.titleSmall,
                 textAlign: TextAlign.center,
               ),
+              const SizedBox(height: 12),
+              // Step 1: Open chat.z.ai
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Step 1: Open chat.z.ai and solve the captcha',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Click the button below to open chat.z.ai in your '
+                  'browser. Sign in (free guest), type any message, '
+                  'and solve the captcha that appears.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
               const SizedBox(height: 8),
-              // On web, the primary action is to open the popup.
-              // On Linux/macOS, the primary action is to switch to
-              // API-key mode (and there's a manual paste field too).
-              if (kIsWeb) ...<Widget>[
-                Text(
-                  'A new window will open with the captcha. Solve it '
-                  'there and the result will be sent back automatically.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                  textAlign: TextAlign.center,
+              FilledButton.icon(
+                onPressed: widget.popupOpening ? null : widget.onOpenPopup,
+                icon: widget.popupOpening
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.open_in_new),
+                label: Text(
+                  widget.popupOpening
+                      ? 'Browser opened — solve captcha there'
+                      : 'Open chat.z.ai',
                 ),
-                const SizedBox(height: 16),
-                FilledButton.icon(
-                  onPressed: widget.popupOpening
-                      ? null
-                      : widget.onOpenPopup,
-                  icon: widget.popupOpening
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.open_in_new),
-                  label: Text(
-                    widget.popupOpening
-                        ? 'Waiting for captcha…'
-                        : 'Open captcha popup',
+              ),
+              const SizedBox(height: 16),
+              // Step 2: Copy the param
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Step 2: Copy captcha_verify_param',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'In chat.z.ai, press F12 → Network tab. Find the '
+                  '"chat/completions" request. Click it → Payload tab '
+                  '→ copy the captcha_verify_param value (starts with '
+                  '"eyJ...").',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Step 3: Paste and submit
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Step 3: Paste it below',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      decoration: const InputDecoration(
+                        hintText: 'Paste captcha_verify_param here',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      maxLines: 1,
+                      style: const TextStyle(fontSize: 12),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Or paste a captcha_verify_param manually:',
-                  style: Theme.of(context).textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                _ManualPasteField(
-                  controller: _controller,
-                  onSolved: widget.onSolved,
-                ),
-              ] else ...<Widget>[
-                Text(
-                  'To use guest mode, switch to a browser to solve the '
-                  'captcha on chat.z.ai, then copy the captcha_verify_param '
-                  'and paste it into the app. Or switch to API-key mode in '
-                  'Settings (no captcha needed).',
-                  style: Theme.of(context).textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
-                _ManualPasteField(
-                  controller: _controller,
-                  onSolved: widget.onSolved,
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () {
+                      final value = _controller.text.trim();
+                      if (value.isNotEmpty) {
+                        widget.onSolved(value);
+                      }
+                    },
+                    child: const Text('Verify'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
       ),
-    );
-  }
-}
-
-/// Text field + button for manual paste of the captcha_verify_param.
-class _ManualPasteField extends StatelessWidget {
-  const _ManualPasteField({
-    required this.controller,
-    required this.onSolved,
-  });
-  final TextEditingController controller;
-  final ValueChanged<String> onSolved;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: <Widget>[
-        Expanded(
-          child: TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              labelText: 'captcha_verify_param',
-              hintText: 'Paste the captcha verify param here',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            maxLines: 1,
-          ),
-        ),
-        const SizedBox(width: 8),
-        FilledButton.tonal(
-          onPressed: () {
-            final value = controller.text.trim();
-            if (value.isNotEmpty) {
-              onSolved(value);
-            }
-          },
-          child: const Text('Use'),
-        ),
-      ],
     );
   }
 }
