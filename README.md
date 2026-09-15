@@ -28,6 +28,63 @@ engine (Skia/Impeller).
   explainer, translator) and the ability to add your own.
 - **Settings**: account (API key), theme (light/dark/system), language
   (English / 中文), model picker.
+
+## Building
+
+### Prerequisites (all platforms)
+
+- [Flutter SDK](https://docs.flutter.dev/get-started/install) 3.27.x stable
+- Run `flutter pub get` after cloning
+
+### Windows
+
+**Additional prerequisite**: [Nuget](https://www.nuget.org/downloads) must
+be installed and on your PATH. The `flutter_inappwebview_windows` plugin
+(required for the Aliyun captcha widget in guest mode) uses Nuget to
+fetch the WebView2 runtime during the CMake build.
+
+```sh
+# Install Nuget via winget (Windows Package Manager)
+winget install Microsoft.Nuget
+
+# Or download nuget.exe directly and add it to your PATH:
+# https://www.nuget.org/downloads
+
+# Then build:
+flutter build windows --release
+# Or run in debug mode:
+flutter run -d windows
+```
+
+If you get "Nuget is not installed!", make sure `nuget.exe` is
+accessible from the command line (`nuget help` should work).
+
+### Web
+
+```sh
+flutter build web --release
+# Serve the build:
+python3 -m http.server 8080 --directory build/web
+```
+
+**Note on guest mode on Web**: The Aliyun captcha binds its security
+token to the solving origin. Since our web app runs at `localhost` (not
+`chat.z.ai`), the captcha token is rejected by chat.z.ai's backend. Use
+API-key mode on web (Settings → Account → "I have a z.ai API key") or
+use the desktop app for guest mode.
+
+### Linux
+
+```sh
+flutter build linux --release
+```
+
+### Android
+
+```sh
+flutter build apk --release
+```
+
 - **i18n** from day one — English and Chinese localisations are bundled,
   more can be added by dropping in an `.arb` file.
 - **Optional night mode** that follows the system preference by default.
