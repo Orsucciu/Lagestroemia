@@ -38,3 +38,5 @@ e2e/test-results/
 e2e/node_modules/
 scripts/extension-chrome/
 scripts/extension-firefox/
+extension/__pycache__/
+*.pyc

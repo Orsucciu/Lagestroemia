@@ -12,8 +12,8 @@ import sys
 import os
 
 def test_server():
-    # Start the server in a subprocess (it will fail to connect to
-    # the extension, but the HTTP server still starts).
+    # Start the server in a subprocess. DON'T send a fake "connected"
+    # message — we want to test the 503 path (extension not connected).
     proc = subprocess.Popen(
         [sys.executable, 'native_host.py'],
         stdin=subprocess.PIPE,
@@ -22,25 +22,17 @@ def test_server():
         cwd=os.path.dirname(os.path.abspath(__file__)),
     )
 
-    # Send a fake "connected" message so the server thinks the extension
-    # is connected.
-    import struct
-    msg = json.dumps({"type": "connected"}).encode('utf-8')
-    proc.stdin.write(struct.pack('<I', len(msg)))
-    proc.stdin.write(msg)
-    proc.stdin.flush()
-
     # Give the server time to start.
     time.sleep(2)
 
     results = []
 
-    # Test 1: Health endpoint
+    # Test 1: Health endpoint (extension should NOT be connected)
     try:
         resp = urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=5)
         data = json.loads(resp.read())
         assert data['ok'] == True
-        assert data['extension_connected'] == True
+        assert data['extension_connected'] == False
         results.append(('Health endpoint', True, str(data)))
     except Exception as e:
         results.append(('Health endpoint', False, str(e)))
@@ -56,7 +48,7 @@ def test_server():
     except Exception as e:
         results.append(('Models endpoint', False, str(e)))
 
-    # Test 3: Chat endpoint (without extension, should get 503)
+    # Test 3: Chat endpoint (extension NOT connected → should get 503)
     try:
         req_data = json.dumps({
             'model': 'glm-4.7',
@@ -69,7 +61,7 @@ def test_server():
         )
         try:
             resp = urllib.request.urlopen(req, timeout=5)
-            results.append(('Chat (no ext)', False, 'Should have failed'))
+            results.append(('Chat (no ext → 503)', False, 'Should have returned 503'))
         except urllib.error.HTTPError as e:
             data = json.loads(e.read())
             assert e.code == 503
