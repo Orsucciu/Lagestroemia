@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.4</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.5</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -312,23 +312,45 @@
   };
 
   // ---- Send test message ----
+  // Instead of going through our own API client (which has captcha issues),
+  // we type into chat.z.ai's own input and click its send button.
+  // This uses chat.z.ai's native message flow — the captcha SDK is
+  // triggered automatically, and the response appears in the DOM.
   window.lzSendTestMessage = function sendTestMessage() {
-    log('[content] Sending test message via background...');
-    chrome.runtime.sendMessage({
-      type: 'sendChat',
-      messages: [{ role: 'user', content: 'Hello! This is a test from Lagestroemia.' }],
-      model: 'glm-4.7',
-      options: {},
-    }, function(response) {
-      if (chrome.runtime.lastError) {
-        log('[content] ❌ Error: ' + chrome.runtime.lastError.message);
-      } else if (response && response.ok) {
-        var content = response.chunks.map(function(c) { return c.content || ''; }).join('');
-        log('[content] ✅ Response: ' + content.substring(0, 100));
+    log('Sending test message via chat.z.ai native UI...');
+    var textarea = document.getElementById('chat-input');
+    if (!textarea) {
+      log('❌ #chat-input not found');
+      return;
+    }
+
+    // Type the message into the textarea using the native input event
+    // so Svelte picks up the change.
+    var testMsg = 'Hello! This is a test from Lagestroemia.';
+    textarea.value = testMsg;
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    log('Typed: "' + testMsg + '"');
+
+    // Wait a moment for Svelte to update, then click send.
+    setTimeout(function() {
+      var sendBtn = document.getElementById('send-message-button');
+      if (sendBtn) {
+        // The button might be disabled until the input is registered.
+        // Force-enable it and click.
+        sendBtn.disabled = false;
+        sendBtn.click();
+        log('Clicked #send-message-button');
       } else {
-        log('[content] ❌ ' + (response ? response.error : 'No response'));
+        // Try submitting the form.
+        var form = textarea.closest('form');
+        if (form) {
+          form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          log('Submitted form');
+        } else {
+          log('❌ No send button or form found');
+        }
       }
-    });
+    }, 500);
   };
 
   function escapeHtml(text) {
