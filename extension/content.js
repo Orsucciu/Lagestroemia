@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.1</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.2</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -601,17 +601,37 @@ async function* parseSSE(resp) {
 // ---- Solve captcha using chat.z.ai's own SDK ----
 async function solveCaptcha() {
   return new Promise((resolve, reject) => {
-    // Check if the Aliyun captcha SDK is loaded.
-    if (!window.initAliyunCaptcha) {
-      // Load it ourselves.
-      const s = document.createElement('script');
-      s.src = 'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js';
-      s.onload = () => doInitCaptcha(resolve, reject);
-      s.onerror = () => reject(new Error('Failed to load captcha SDK'));
-      document.head.appendChild(s);
-    } else {
-      doInitCaptcha(resolve, reject);
+    // chat.z.ai loads the Aliyun captcha SDK lazily. We must NOT load
+    // it ourselves — chat.z.ai's CSP blocks scripts from alicdn.com
+    // when injected by an extension. Instead, we wait for chat.z.ai's
+    // own copy to be available.
+    var attempts = 0;
+    var maxAttempts = 60; // 60 * 500ms = 30s timeout
+
+    function checkForCaptcha() {
+      attempts++;
+      if (window.initAliyunCaptcha) {
+        doInitCaptcha(resolve, reject);
+      } else if (attempts < maxAttempts) {
+        // Try to trigger chat.z.ai to load the SDK by simulating a
+        // click on the chat input (chat.z.ai loads the SDK on first
+        // interaction).
+        if (attempts === 1) {
+          console.log('[content] Waiting for chat.z.ai to load captcha SDK...');
+          // Try clicking the send button or input to trigger lazy loading.
+          var inputs = document.querySelectorAll('textarea, [contenteditable], input[type="text"]');
+          if (inputs.length > 0) {
+            inputs[0].click();
+            console.log('[content] Clicked input to trigger SDK load');
+          }
+        }
+        setTimeout(checkForCaptcha, 500);
+      } else {
+        reject(new Error('Captcha SDK not available after 30s. Try typing a message on chat.z.ai first, then retry.'));
+      }
     }
+
+    checkForCaptcha();
   });
 }
 
