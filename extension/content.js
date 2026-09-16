@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.1</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -61,12 +61,12 @@
   var btnRow1 = document.createElement('div');
   btnRow1.style.cssText = 'display:flex;gap:6px;';
   btnRow1.appendChild(makeButton('Refresh chats', '#3498db', function() {
-    log('[content] Refresh chats button clicked');
-    refreshChatList();
+    log('Refresh chats clicked');
+    window.lzRefreshChatList();
   }));
   btnRow1.appendChild(makeButton('Open new chat', '#27ae60', function() {
-    log('[content] Open new chat button clicked');
-    openNewChat();
+    log('Open new chat clicked');
+    window.lzOpenNewChat();
   }));
   body.appendChild(btnRow1);
 
@@ -81,8 +81,8 @@
   body.appendChild(currentChatInfo);
 
   body.appendChild(makeButton('Read current chat', '#e67e22', function() {
-    log('[content] Read current chat button clicked');
-    readCurrentChat();
+    log('Read current chat clicked');
+    window.lzReadCurrentChat();
   }));
 
   body.appendChild(makeDivider());
@@ -90,8 +90,8 @@
   // Section: Test
   body.appendChild(makeLabel('🧪 Test'));
   body.appendChild(makeButton('Send test message', '#9b59b6', function() {
-    log('[content] Test send button clicked');
-    sendTestMessage();
+    log('Test send clicked');
+    window.lzSendTestMessage();
   }));
 
   body.appendChild(makeDivider());
@@ -104,11 +104,22 @@
   logBox.textContent = 'Ready.';
   body.appendChild(logBox);
 
-  // Toggle body on header click.
+  // Toggle body on header click. Close button hides the entire panel.
   var expanded = true;
-  header.onclick = function() {
-    body.style.display = expanded ? 'none' : 'flex';
-    expanded = !expanded;
+  var minimized = false;
+  header.onclick = function(e) {
+    // Don't toggle if the close button was clicked.
+    if (e.target.id === 'lz-close-btn') return;
+    minimized = !minimized;
+    body.style.display = minimized ? 'none' : 'flex';
+    panel.style.borderRadius = minimized ? '20px' : '12px';
+  };
+
+  // Close button — removes the panel entirely (reload page to bring back).
+  var closeBtn = header.querySelector('#lz-close-btn');
+  closeBtn.onclick = function(e) {
+    e.stopPropagation();
+    panel.remove();
   };
 
   // Wait for body.
