@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.2</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.3</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -222,48 +222,95 @@
 
   // ---- Open new chat ----
   window.lzOpenNewChat = function openNewChat() {
-    log('[content] Opening new chat...');
-    // Navigate to chat.z.ai's root (creates a new chat).
-    window.location.href = 'https://chat.z.ai/';
-    log('[content] Navigated to new chat');
+    log('Opening new chat...');
+    // Click chat.z.ai's own "new chat" button in the sidebar.
+    var btn = document.getElementById('sidebar-new-chat-button');
+    if (btn) {
+      log('Found sidebar-new-chat-button, clicking...');
+      btn.click();
+      log('Clicked new chat button');
+    } else {
+      // Fallback: navigate to root.
+      log('sidebar-new-chat-button not found, navigating to /');
+      window.location.href = 'https://chat.z.ai/';
+    }
   };
 
   // ---- Read current chat ----
   window.lzReadCurrentChat = function readCurrentChat() {
-    log('[content] Reading current chat...');
+    log('Reading current chat...');
     var infoEl = document.getElementById('lz-current-chat');
     if (infoEl) infoEl.innerHTML = '<div style="color:#888">Reading...</div>';
 
-    // Get the current URL to extract the chat ID.
     var url = window.location.href;
     var chatId = '';
     var match = url.match(/\/c\/([a-f0-9-]+)/);
     if (match) chatId = match[1];
 
-    // Try to read messages from the DOM.
+    // Read messages from the DOM. chat.z.ai renders messages as
+    // prose/markdown divs inside the chat area.
     var messages = [];
-    var msgElements = document.querySelectorAll('[class*="message"], [class*="chat-content"], [class*="prose"]');
-    log('[content] Found ' + msgElements.length + ' message-like elements');
-
-    // Try to read the page title.
-    var title = document.title || 'Unknown';
-
-    // Try to find the model selector value.
-    var model = 'Unknown';
-    var modelSelect = document.querySelector('select, [class*="model"], [class*="ModelSelect"]');
-    if (modelSelect) {
-      model = modelSelect.textContent || modelSelect.value || 'Unknown';
+    // Try multiple selectors to find message bubbles.
+    var selectors = [
+      '[class*="prose"]',           // markdown content
+      '[class*="message"]',
+      '[class*="chat-content"]',
+      '[class*="response"]',
+      'div[class*="markdown"]',
+      'article',
+    ];
+    var msgElements = [];
+    for (var s = 0; s < selectors.length; s++) {
+      msgElements = document.querySelectorAll(selectors[s]);
+      if (msgElements.length > 0) {
+        log('Found ' + msgElements.length + ' elements with selector: ' + selectors[s]);
+        break;
+      }
     }
 
+    for (var i = 0; i < msgElements.length; i++) {
+      var text = msgElements[i].textContent.trim().substring(0, 200);
+      if (text.length > 10) {
+        messages.push(text);
+      }
+    }
+
+    // Get the model from the model selector dropdown.
+    var model = 'Unknown';
+    var modelBtn = document.querySelector('[class*="model-select"], [class*="ModelSelect"], [class*="model"]');
+    if (modelBtn) {
+      model = modelBtn.textContent.trim().substring(0, 50);
+    }
+
+    // Also check for the specific model button text.
+    var allButtons = document.querySelectorAll('button');
+    for (var b = 0; b < allButtons.length; b++) {
+      var btnText = allButtons[b].textContent.trim();
+      if (btnText.match(/GLM-|glm-|Z1-|deep-research|zero/i)) {
+        model = btnText.substring(0, 50);
+        break;
+      }
+    }
+
+    var title = document.title || 'Unknown';
     var info = 'URL: ' + url + '\n' +
                'Chat ID: ' + (chatId || 'none') + '\n' +
                'Title: ' + title + '\n' +
                'Model: ' + model + '\n' +
-               'Message elements: ' + msgElements.length;
-    log('[content] Current chat info:\n' + info);
+               'Messages found: ' + messages.length;
+
+    if (messages.length > 0) {
+      info += '\n\n--- Messages ---';
+      for (var m = 0; m < Math.min(messages.length, 5); m++) {
+        info += '\n[' + (m+1) + '] ' + messages[m].substring(0, 100);
+      }
+      if (messages.length > 5) info += '\n... and ' + (messages.length - 5) + ' more';
+    }
+
+    log('Current chat: ' + messages.length + ' messages, model: ' + model);
 
     if (infoEl) {
-      infoEl.innerHTML = '<pre style="white-space:pre-wrap;color:#ccc;">' + escapeHtml(info) + '</pre>';
+      infoEl.innerHTML = '<pre style="white-space:pre-wrap;color:#ccc;font-size:10px;">' + escapeHtml(info) + '</pre>';
     }
   };
 
@@ -605,29 +652,57 @@ async function solveCaptcha() {
     // it ourselves — chat.z.ai's CSP blocks scripts from alicdn.com
     // when injected by an extension. Instead, we wait for chat.z.ai's
     // own copy to be available.
+    //
+    // The SDK is loaded when the user interacts with chat.z.ai (types
+    // a message, clicks send). We try to trigger it by clicking the
+    // input, then poll for window.initAliyunCaptcha.
+    console.log('[content] solveCaptcha() called — looking for initAliyunCaptcha...');
+
     var attempts = 0;
-    var maxAttempts = 60; // 60 * 500ms = 30s timeout
+    var maxAttempts = 120; // 120 * 500ms = 60s timeout
 
     function checkForCaptcha() {
       attempts++;
+      console.log('[content] Checking for initAliyunCaptcha (attempt ' + attempts + ')...');
+
       if (window.initAliyunCaptcha) {
+        console.log('[content] ✅ initAliyunCaptcha found!');
         doInitCaptcha(resolve, reject);
-      } else if (attempts < maxAttempts) {
-        // Try to trigger chat.z.ai to load the SDK by simulating a
-        // click on the chat input (chat.z.ai loads the SDK on first
-        // interaction).
+        return;
+      }
+
+      if (attempts < maxAttempts) {
+        // Try to trigger chat.z.ai to load the SDK by interacting
+        // with the page. chat.z.ai loads the SDK on first chat send
+        // attempt.
         if (attempts === 1) {
-          console.log('[content] Waiting for chat.z.ai to load captcha SDK...');
-          // Try clicking the send button or input to trigger lazy loading.
-          var inputs = document.querySelectorAll('textarea, [contenteditable], input[type="text"]');
-          if (inputs.length > 0) {
-            inputs[0].click();
-            console.log('[content] Clicked input to trigger SDK load');
+          console.log('[content] Trying to trigger SDK load by clicking input...');
+          // Click the textarea/input.
+          var inputs = document.querySelectorAll('textarea, [contenteditable="true"]');
+          for (var i = 0; i < inputs.length; i++) {
+            inputs[i].click();
+            inputs[i].focus();
+          }
+          // Also try clicking any "send" button.
+          var sendBtns = document.querySelectorAll('button[type="submit"], button[class*="send"]');
+          for (var s = 0; s < sendBtns.length; s++) {
+            // Don't actually click send — just focus it.
+            sendBtns[s].focus();
           }
         }
+
+        // Every 10 attempts, try clicking the input again.
+        if (attempts % 10 === 0) {
+          console.log('[content] Still waiting for SDK... try clicking input again.');
+          var inputs2 = document.querySelectorAll('textarea, [contenteditable="true"]');
+          if (inputs2.length > 0) {
+            inputs2[0].click();
+          }
+        }
+
         setTimeout(checkForCaptcha, 500);
       } else {
-        reject(new Error('Captcha SDK not available after 30s. Try typing a message on chat.z.ai first, then retry.'));
+        reject(new Error('Captcha SDK not available after 60s. Please type a message in chat.z.ai first to trigger the SDK load, then retry.'));
       }
     }
 
