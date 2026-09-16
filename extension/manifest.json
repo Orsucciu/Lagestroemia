@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lagestroemia for chat.z.ai",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "A powerful chat client for chat.z.ai with auto-retry, model switching, and conversation management.",
   "permissions": [
     "storage",

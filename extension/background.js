@@ -74,15 +74,11 @@ async function getGuestToken() {
 }
 
 // ---- Native Messaging (local HTTP server bridge) ----
-//
-// The native_host.py script runs a local HTTP server on localhost:8081
-// that exposes an OpenAI-compatible API. External apps (opencode, curl)
-// connect to it. The native script relays requests to us via Native
-// Messaging (stdin/stdout), and we forward them to the content script.
 
 const NATIVE_HOST_NAME = 'lagestroemia';
 let nativePort = null;
 let nativeReady = false;
+let keepAliveInterval = null;
 
 function connectNative() {
   try {
@@ -96,45 +92,27 @@ function connectNative() {
       if (msg.type === 'nativeReady') {
         nativeReady = true;
         console.log('[bg] Native host ready on port', msg.port);
-        // Broadcast to all content scripts.
         broadcastNativeStatus(true);
+        startKeepAlive();
         return;
       }
 
       if (msg.type === 'sendChat') {
-        // A request from the local HTTP server. Forward to the content script.
         const requestId = msg.requestId;
         const messages = msg.messages;
         const model = msg.model;
-        const stream = msg.stream !== false;
         const options = msg.options || {};
 
-        // Find the chat.z.ai tab.
         api.tabs.query({ url: 'https://chat.z.ai/*' }, (tabs) => {
           if (tabs.length === 0) {
-            // No chat.z.ai tab — send error back.
-            sendToNative({
-              type: 'error',
-              requestId: requestId,
-              error: 'No chat.z.ai tab open. Open https://chat.z.ai in a tab first.',
-            });
+            sendToNative({ type: 'error', requestId, error: 'No chat.z.ai tab open.' });
             return;
           }
-
-          // Forward to the content script.
           api.tabs.sendMessage(tabs[0].id, {
-            type: 'sendChat',
-            requestId: requestId,
-            messages: messages,
-            model: model,
-            options: options,
+            type: 'sendChat', requestId, messages, model, options,
           }, (response) => {
             if (api.runtime.lastError) {
-              sendToNative({
-                type: 'error',
-                requestId: requestId,
-                error: api.runtime.lastError.message,
-              });
+              sendToNative({ type: 'error', requestId, error: api.runtime.lastError.message });
             }
           });
         });
@@ -144,35 +122,51 @@ function connectNative() {
     nativePort.onDisconnect.addListener(() => {
       const err = api.runtime.lastError;
       console.log('[bg] Native host DISCONNECTED:', err ? err.message : '(no error)');
-      console.log('[bg] This usually means:');
-      console.log('  - The native messaging host is not registered');
-      console.log('  - The manifest JSON is malformed');
-      console.log('  - The bat/sh wrapper path is wrong');
-      console.log('  - Python is not on PATH');
-      console.log('  - The extension ID in allowed_origins doesn\'t match');
       nativePort = null;
       nativeReady = false;
+      stopKeepAlive();
       broadcastNativeStatus(false);
-      // Try to reconnect after 5 seconds.
-      setTimeout(connectNative, 5000);
+      setTimeout(connectNative, 3000);
     });
 
-    console.log('[bg] Connected to native host (port object created)');
-    console.log('[bg] Waiting for nativeReady message...');
+    console.log('[bg] Connected to native host, waiting for nativeReady...');
   } catch (e) {
     console.log('[bg] Failed to connect to native host:', e);
-    console.log('[bg] Make sure you ran scripts/install-native.ps1');
     broadcastNativeStatus(false);
-    // Retry after 10 seconds.
-    setTimeout(connectNative, 10000);
+    setTimeout(connectNative, 5000);
+  }
+}
+
+// ---- Keep the service worker alive ----
+// MV3 service workers are killed after 30s of inactivity. We send a
+// ping every 25s to keep the port alive. The native host ignores it.
+function startKeepAlive() {
+  if (keepAliveInterval) clearInterval(keepAliveInterval);
+  keepAliveInterval = setInterval(() => {
+    if (nativePort) {
+      try {
+        nativePort.postMessage({ type: 'ping' });
+        console.log('[bg] keepalive ping sent');
+      } catch (e) {
+        console.log('[bg] keepalive failed, reconnecting...');
+        stopKeepAlive();
+        connectNative();
+      }
+    }
+  }, 25000);
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
   }
 }
 
 function broadcastNativeStatus(connected) {
-  // Send status to all chat.z.ai tabs (updates the badge).
   api.tabs.query({ url: 'https://chat.z.ai/*' }, (tabs) => {
     for (const tab of tabs) {
-      api.tabs.sendMessage(tab.id, { type: 'nativeStatus', connected: connected }).catch(() => {});
+      api.tabs.sendMessage(tab.id, { type: 'nativeStatus', connected }).catch(() => {});
     }
   });
 }
@@ -187,7 +181,7 @@ function sendToNative(msg) {
   }
 }
 
-// Connect to the native host on startup.
+// Connect on startup.
 connectNative();
 
 // ---- Message relay (side panel + content script + native host) ----

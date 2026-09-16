@@ -109,6 +109,10 @@ def stdin_reader_thread():
                 _extension_connected.set()
                 print("[native] Extension connected", file=sys.stderr)
 
+            elif msg_type == 'ping':
+                # Keepalive ping from the service worker. Just ignore.
+                pass
+
             elif msg_type == 'response':
                 request_id = msg.get('requestId', '')
                 with _response_queues_lock:

@@ -541,6 +541,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'sendChat') {
+    // Flash the badge to show we received the message.
+    var badge = document.getElementById('lagestroemia-badge');
+    if (badge) {
+      badge.style.transform = 'scale(1.3)';
+      badge.style.background = '#e74c3c';
+      badge.innerHTML = '🌺 Sending...';
+      setTimeout(function() {
+        badge.style.transform = '';
+        updateBadge();
+      }, 2000);
+    }
+    console.log('[content] sendChat received! requestId:', message.requestId, 'model:', message.model);
+
     const { messages, model, options, requestId } = message;
     const chunks = [];
 
