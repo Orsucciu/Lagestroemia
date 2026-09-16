@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.3</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.4</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -247,47 +247,45 @@
     var match = url.match(/\/c\/([a-f0-9-]+)/);
     if (match) chatId = match[1];
 
-    // Read messages from the DOM. chat.z.ai renders messages as
-    // prose/markdown divs inside the chat area.
+    // Read messages from the DOM using chat.z.ai's actual CSS classes.
+    // Structure from the HTML:
+    //   <div class="chat-user w-full ...">...</div>       — user message
+    //   <div class="chat-assistant w-full ... svelte-..."> — assistant message
+    //   <p class="svelte-4sys19">actual text here</p>      — message text
     var messages = [];
-    // Try multiple selectors to find message bubbles.
-    var selectors = [
-      '[class*="prose"]',           // markdown content
-      '[class*="message"]',
-      '[class*="chat-content"]',
-      '[class*="response"]',
-      'div[class*="markdown"]',
-      'article',
-    ];
-    var msgElements = [];
-    for (var s = 0; s < selectors.length; s++) {
-      msgElements = document.querySelectorAll(selectors[s]);
-      if (msgElements.length > 0) {
-        log('Found ' + msgElements.length + ' elements with selector: ' + selectors[s]);
-        break;
+    var msgContainers = document.querySelectorAll('.chat-user, .chat-assistant');
+    log('Found ' + msgContainers.length + ' message containers');
+
+    for (var i = 0; i < msgContainers.length; i++) {
+      var el = msgContainers[i];
+      var isUser = el.classList.contains('chat-user');
+      var role = isUser ? 'user' : 'assistant';
+
+      // Get the text from <p> elements inside the container.
+      var pElements = el.querySelectorAll('p');
+      var text = '';
+      if (pElements.length > 0) {
+        for (var p = 0; p < pElements.length; p++) {
+          text += pElements[p].textContent.trim() + '\n';
+        }
+      } else {
+        // Fallback: get all text content.
+        text = el.textContent.trim();
+      }
+
+      text = text.trim().substring(0, 300);
+      if (text.length > 0) {
+        messages.push({ role: role, text: text });
       }
     }
 
-    for (var i = 0; i < msgElements.length; i++) {
-      var text = msgElements[i].textContent.trim().substring(0, 200);
-      if (text.length > 10) {
-        messages.push(text);
-      }
-    }
-
-    // Get the model from the model selector dropdown.
+    // Get the model from the page — look for model name in buttons.
     var model = 'Unknown';
-    var modelBtn = document.querySelector('[class*="model-select"], [class*="ModelSelect"], [class*="model"]');
-    if (modelBtn) {
-      model = modelBtn.textContent.trim().substring(0, 50);
-    }
-
-    // Also check for the specific model button text.
     var allButtons = document.querySelectorAll('button');
     for (var b = 0; b < allButtons.length; b++) {
       var btnText = allButtons[b].textContent.trim();
-      if (btnText.match(/GLM-|glm-|Z1-|deep-research|zero/i)) {
-        model = btnText.substring(0, 50);
+      if (btnText.match(/GLM-|glm-|Z1-|deep-research|zero/i) && btnText.length < 50) {
+        model = btnText;
         break;
       }
     }
@@ -297,17 +295,16 @@
                'Chat ID: ' + (chatId || 'none') + '\n' +
                'Title: ' + title + '\n' +
                'Model: ' + model + '\n' +
-               'Messages found: ' + messages.length;
+               'Messages: ' + messages.length;
 
     if (messages.length > 0) {
       info += '\n\n--- Messages ---';
-      for (var m = 0; m < Math.min(messages.length, 5); m++) {
-        info += '\n[' + (m+1) + '] ' + messages[m].substring(0, 100);
+      for (var m = 0; m < Math.min(messages.length, 10); m++) {
+        info += '\n[' + messages[m].role + '] ' + messages[m].text.substring(0, 100);
       }
-      if (messages.length > 5) info += '\n... and ' + (messages.length - 5) + ' more';
     }
 
-    log('Current chat: ' + messages.length + ' messages, model: ' + model);
+    log('Read ' + messages.length + ' messages, model: ' + model);
 
     if (infoEl) {
       infoEl.innerHTML = '<pre style="white-space:pre-wrap;color:#ccc;font-size:10px;">' + escapeHtml(info) + '</pre>';
