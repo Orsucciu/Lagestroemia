@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.5</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -174,50 +174,77 @@
     window.lzLog(msg.replace('[content] ', ''));
   }
 
-  // ---- Chat list: read from chat.z.ai's DOM ----
+  // ---- Chat list: read from chat.z.ai's API ----
   window.lzRefreshChatList = function refreshChatList() {
-    log('[content] Refreshing chat list...');
+    log('Refreshing chat list...');
     var chatListEl = document.getElementById('lz-chat-list');
     if (chatListEl) chatListEl.innerHTML = '<div style="color:#888">Loading...</div>';
 
-    // Try to read the chat list from chat.z.ai's sidebar.
-    // chat.z.ai uses React with a sidebar that contains chat links.
-    var chats = [];
-
-    // Method 1: look for anchor tags with /c/ in the href (chat URLs).
-    var links = document.querySelectorAll('a[href*="/c/"]');
-    log('[content] Found ' + links.length + ' chat links');
-    for (var i = 0; i < links.length; i++) {
-      var href = links[i].getAttribute('href') || '';
-      var title = links[i].textContent.trim().substring(0, 50);
-      var chatId = href.split('/c/')[1];
-      if (chatId && title) {
-        chats.push({ id: chatId, title: title, url: href });
+    // Use chat.z.ai's API to get the chat list (same-origin, no CORS).
+    getGuestToken().then(function(token) {
+      return fetch('https://chat.z.ai/api/v1/chats/', {
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'X-FE-Version': FE_VERSION,
+        },
+        credentials: 'include',
+      });
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      var chats = [];
+      if (Array.isArray(data)) {
+        chats = data;
+      } else if (data.data && Array.isArray(data.data)) {
+        chats = data.data;
       }
-    }
 
-    // Method 2: look for elements with chat-like content.
-    if (chats.length === 0) {
-      var items = document.querySelectorAll('[class*="chat"], [class*="conversation"], [class*="history"]');
-      log('[content] Found ' + items.length + ' chat-like elements');
-    }
+      log('API returned ' + chats.length + ' chats');
 
-    // Display.
-    if (chatListEl) {
-      if (chats.length === 0) {
-        chatListEl.innerHTML = '<div style="color:#888">No chats found in DOM. The sidebar may be collapsed.</div>';
-      } else {
-        chatListEl.innerHTML = '';
-        for (var j = 0; j < chats.length; j++) {
-          var div = document.createElement('div');
-          div.style.cssText = 'padding:4px 0;border-bottom:1px solid #222;';
-          div.innerHTML = '<div style="color:#fff">' + escapeHtml(chats[j].title) + '</div>' +
-                          '<div style="color:#666;font-size:10px">ID: ' + chats[j].id.substring(0, 12) + '...</div>';
-          chatListEl.appendChild(div);
+      if (chatListEl) {
+        if (chats.length === 0) {
+          chatListEl.innerHTML = '<div style="color:#888">No chats found.</div>';
+        } else {
+          chatListEl.innerHTML = '';
+          for (var i = 0; i < Math.min(chats.length, 20); i++) {
+            var chat = chats[i];
+            var title = chat.title || chat.name || 'Untitled';
+            var model = chat.model || 'unknown';
+            var chatId = chat.id || '';
+            var updated = chat.updated_at ? new Date(chat.updated_at * 1000).toLocaleString() : '';
+
+            var div = document.createElement('div');
+            div.style.cssText = 'padding:4px 0;border-bottom:1px solid #222;cursor:pointer;';
+            div.innerHTML = '<div style="color:#fff">' + escapeHtml(title.substring(0, 40)) + '</div>' +
+                            '<div style="color:#666;font-size:10px">' + escapeHtml(model) + ' · ' + updated + '</div>';
+            div.onclick = (function(id) {
+              return function() {
+                window.location.href = 'https://chat.z.ai/c/' + id;
+              };
+            })(chatId);
+            chatListEl.appendChild(div);
+          }
         }
       }
-    }
-    log('[content] Chat list: ' + chats.length + ' chats found');
+    }).catch(function(err) {
+      log('❌ Chat list API error: ' + err.message);
+      // Fallback: try DOM.
+      var links = document.querySelectorAll('a[href*="/c/"]');
+      log('DOM fallback: found ' + links.length + ' chat links');
+      if (chatListEl) {
+        if (links.length === 0) {
+          chatListEl.innerHTML = '<div style="color:#888">No chats found.</div>';
+        } else {
+          chatListEl.innerHTML = '';
+          for (var j = 0; j < links.length; j++) {
+            var href = links[j].getAttribute('href') || '';
+            var title = links[j].textContent.trim().substring(0, 40);
+            var div = document.createElement('div');
+            div.style.cssText = 'padding:4px 0;border-bottom:1px solid #222;';
+            div.innerHTML = '<div style="color:#fff">' + escapeHtml(title) + '</div>';
+            chatListEl.appendChild(div);
+          }
+        }
+      }
+    });
   };
 
   // ---- Open new chat ----
@@ -312,46 +339,144 @@
   };
 
   // ---- Send test message ----
-  // Instead of going through our own API client (which has captcha issues),
-  // we type into chat.z.ai's own input and click its send button.
-  // This uses chat.z.ai's native message flow — the captcha SDK is
-  // triggered automatically, and the response appears in the DOM.
+  // Types into chat.z.ai's #chat-input and clicks #send-message-button.
+  // The response appears in the DOM. A MutationObserver streams it back.
   window.lzSendTestMessage = function sendTestMessage() {
-    log('Sending test message via chat.z.ai native UI...');
+    var testMsg = 'Hello! This is a test from Lagestroemia.';
+    window.lzSendMessage(testMsg);
+  };
+
+  // ---- Core: send a message via chat.z.ai's native UI ----
+  // Types text into #chat-input, clicks #send-message-button, and
+  // watches for the response via MutationObserver. The response is
+  // streamed back to the background script (and from there to the
+  // HTTP server / side panel).
+  window.lzSendMessage = function sendMessage(text, requestId) {
+    requestId = requestId || ('msg-' + Date.now());
+    log('Sending via native UI: "' + text.substring(0, 40) + '" (id: ' + requestId + ')');
+
     var textarea = document.getElementById('chat-input');
     if (!textarea) {
       log('❌ #chat-input not found');
+      chrome.runtime.sendMessage({ type: 'chatError', requestId: requestId, error: '#chat-input not found' }).catch(() => {});
       return;
     }
 
-    // Type the message into the textarea using the native input event
-    // so Svelte picks up the change.
-    var testMsg = 'Hello! This is a test from Lagestroemia.';
-    textarea.value = testMsg;
+    // Set the value using the native input setter (Svelte-compatible).
+    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    nativeInputValueSetter.call(textarea, text);
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    log('Typed: "' + testMsg + '"');
+    log('Typed into #chat-input');
 
-    // Wait a moment for Svelte to update, then click send.
+    // Wait for Svelte to register the change, then click send.
     setTimeout(function() {
       var sendBtn = document.getElementById('send-message-button');
       if (sendBtn) {
-        // The button might be disabled until the input is registered.
-        // Force-enable it and click.
         sendBtn.disabled = false;
         sendBtn.click();
         log('Clicked #send-message-button');
+
+        // Start watching for the response.
+        watchForResponse(requestId);
       } else {
-        // Try submitting the form.
+        // Try form submit.
         var form = textarea.closest('form');
         if (form) {
           form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
           log('Submitted form');
+          watchForResponse(requestId);
         } else {
           log('❌ No send button or form found');
+          chrome.runtime.sendMessage({ type: 'chatError', requestId: requestId, error: 'No send button found' }).catch(() => {});
         }
       }
     }, 500);
   };
+
+  // ---- MutationObserver: watch for assistant response ----
+  // Watches the chat area for new .chat-assistant elements. When one
+  // appears, extracts the text from <p> elements and streams chunks
+  // back to the background script. When the assistant message stops
+  // growing (streaming complete), sends chatComplete.
+  function watchForResponse(requestId) {
+    log('Watching for response...');
+
+    var chatArea = document.querySelector('.chat-assistant')?.parentElement ||
+                   document.querySelector('[class*="messages"]') ||
+                   document.querySelector('main') ||
+                   document.body;
+
+    var lastContent = '';
+    var lastLength = 0;
+    var stableCount = 0;
+    var observer = null;
+    var timeout = null;
+
+    // Find the last assistant message before we send (so we can detect
+    // when a NEW one appears).
+    var existingAssistant = document.querySelectorAll('.chat-assistant');
+    var prevCount = existingAssistant.length;
+
+    observer = new MutationObserver(function(mutations) {
+      // Check if a new .chat-assistant appeared.
+      var allAssistant = document.querySelectorAll('.chat-assistant');
+      if (allAssistant.length > prevCount) {
+        // New assistant message found!
+        var latest = allAssistant[allAssistant.length - 1];
+        var pElements = latest.querySelectorAll('p');
+        var currentContent = '';
+        for (var i = 0; i < pElements.length; i++) {
+          currentContent += pElements[i].textContent;
+        }
+
+        if (currentContent.length > lastLength) {
+          // New text arrived — send the delta as a chunk.
+          var delta = currentContent.substring(lastLength);
+          lastLength = currentContent.length;
+          lastContent = currentContent;
+          stableCount = 0;
+
+          chrome.runtime.sendMessage({
+            type: 'chatChunk',
+            requestId: requestId,
+            chunk: { content: delta, reasoning: '' },
+          }).catch(() => {});
+
+          log('← chunk: "' + delta.substring(0, 30) + '"');
+        } else if (currentContent.length === lastLength && lastLength > 0) {
+          // Content stable — might be done streaming.
+          stableCount++;
+          if (stableCount >= 3) {
+            // 3 consecutive checks with no change = stream complete.
+            log('✅ Response complete: ' + lastContent.length + ' chars');
+            chrome.runtime.sendMessage({
+              type: 'chatComplete',
+              requestId: requestId,
+            }).catch(() => {});
+            if (observer) observer.disconnect();
+            if (timeout) clearTimeout(timeout);
+          }
+        }
+      }
+    });
+
+    observer.observe(chatArea, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+
+    // Timeout after 120 seconds.
+    timeout = setTimeout(function() {
+      log('⏱ Timeout waiting for response');
+      chrome.runtime.sendMessage({
+        type: 'chatError',
+        requestId: requestId,
+        error: 'Timeout waiting for response',
+      }).catch(() => {});
+      if (observer) observer.disconnect();
+    }, 120000);
+  }
 
   function escapeHtml(text) {
     var div = document.createElement('div');
@@ -912,57 +1037,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'sendChat') {
     // Flash the badge to show we received the message.
-    var badge = document.getElementById('lagestroemia-badge');
-    if (badge) {
-      badge.style.transform = 'scale(1.3)';
-      badge.style.background = '#e74c3c';
-      badge.innerHTML = '🌺 Sending...';
-      setTimeout(function() {
-        badge.style.transform = '';
-        updateBadge();
-      }, 2000);
-    }
+    var badge = document.getElementById('lz-status-dot');
+    if (badge) badge.style.background = '#e74c3c';
     console.log('[content] sendChat received! requestId:', message.requestId, 'model:', message.model);
 
-    const { messages, model, options, requestId } = message;
-    const chunks = [];
-
-    sendChatWithRetry(
-      messages, model, options || {},
-      // onChunk — collect chunks AND forward to side panel + native host.
-      (chunk) => {
-        chunks.push(chunk);
-        // Forward to the side panel for live streaming + native host.
-        chrome.runtime.sendMessage({
-          type: 'chatChunk',
-          requestId: requestId,
-          chunk: chunk,
-        }).catch(() => {});
-      },
-      // onStatus
-      (status) => {
-        chrome.runtime.sendMessage({
-          type: 'chatStatus',
-          requestId: requestId,
-          status: status,
-        }).catch(() => {});
+    // Use the native UI approach: type into #chat-input and click
+    // #send-message-button. This bypasses the captcha entirely —
+    // chat.z.ai handles it natively. The response is watched by
+    // MutationObserver and streamed back.
+    var userMessage = message.messages[message.messages.length - 1];
+    var text = userMessage.content || '';
+    if (typeof text !== 'string') {
+      // Multi-modal content — extract text parts.
+      text = '';
+      for (var p = 0; p < userMessage.content.length; p++) {
+        if (userMessage.content[p].type === 'text') {
+          text += userMessage.content[p].text;
+        }
       }
-    ).then((result) => {
-      // Stream complete — notify the background script.
-      chrome.runtime.sendMessage({
-        type: 'chatComplete',
-        requestId: requestId,
-      }).catch(() => {});
-      sendResponse({ ok: true, chunks: chunks });
-    }).catch((err) => {
-      chrome.runtime.sendMessage({
-        type: 'chatError',
-        requestId: requestId,
-        error: err.message,
-      }).catch(() => {});
-      sendResponse({ ok: false, error: err.message });
-    });
-    return true; // async response
+    }
+
+    window.lzSendMessage(text, message.requestId);
+
+    // Respond immediately — the actual response comes via streaming
+    // chunks (chatChunk / chatComplete / chatError).
+    sendResponse({ ok: true });
+    return true;
   }
 
   if (message.type === 'solveCaptcha') {
