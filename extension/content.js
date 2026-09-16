@@ -1,60 +1,305 @@
 // content.js — Content script that runs inside the chat.z.ai tab.
 
-// ---- Add a visible badge so the user can confirm the extension is loaded ----
-(function addBadge() {
-  // Remove any existing badge.
-  var existing = document.getElementById('lagestroemia-badge');
+// ---- Add a visible badge + control panel ----
+(function addControlPanel() {
+  // Remove existing.
+  var existing = document.getElementById('lagestroemia-panel');
   if (existing) existing.remove();
 
-  var badge = document.createElement('div');
-  badge.id = 'lagestroemia-badge';
-  badge.innerHTML = '🌺 Lagestroemia Connected';
-  badge.style.cssText = [
+  // Create the panel container.
+  var panel = document.createElement('div');
+  panel.id = 'lagestroemia-panel';
+  panel.style.cssText = [
     'position:fixed',
     'bottom:12px',
     'right:12px',
     'z-index:9999999',
-    'background:#7C4DFF',
+    'background:#1a1a2e',
     'color:white',
-    'padding:6px 14px',
-    'border-radius:20px',
+    'padding:0',
+    'border-radius:12px',
     'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
     'font-size:12px',
-    'font-weight:600',
-    'box-shadow:0 2px 8px rgba(124,77,255,0.4)',
-    'cursor:pointer',
-    'transition:opacity 0.3s',
+    'box-shadow:0 4px 20px rgba(0,0,0,0.5)',
+    'width:340px',
+    'max-height:500px',
+    'overflow-y:auto',
     'user-select:none',
   ].join(';');
 
-  // Click to hide for 10 seconds.
-  badge.onclick = function() {
-    badge.style.opacity = '0.3';
-    setTimeout(function() { badge.style.opacity = '1'; }, 10000);
+  // Header.
+  var header = document.createElement('div');
+  header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.4.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span>';
+  panel.appendChild(header);
+
+  // Body.
+  var body = document.createElement('div');
+  body.id = 'lz-panel-body';
+  body.style.cssText = 'padding:12px;display:flex;flex-direction:column;gap:8px;';
+  panel.appendChild(body);
+
+  // Status line.
+  var statusLine = document.createElement('div');
+  statusLine.id = 'lz-status-line';
+  statusLine.style.cssText = 'color:#888;font-size:11px;';
+  statusLine.textContent = 'Checking...';
+  body.appendChild(statusLine);
+
+  // Divider.
+  body.appendChild(makeDivider());
+
+  // Section: Chats
+  body.appendChild(makeLabel('📋 Chats'));
+  var chatList = document.createElement('div');
+  chatList.id = 'lz-chat-list';
+  chatList.style.cssText = 'color:#aaa;font-size:11px;max-height:150px;overflow-y:auto;';
+  chatList.textContent = 'Not loaded yet';
+  body.appendChild(chatList);
+
+  // Buttons row.
+  var btnRow1 = document.createElement('div');
+  btnRow1.style.cssText = 'display:flex;gap:6px;';
+  btnRow1.appendChild(makeButton('Refresh chats', '#3498db', function() {
+    log('[content] Refresh chats button clicked');
+    refreshChatList();
+  }));
+  btnRow1.appendChild(makeButton('Open new chat', '#27ae60', function() {
+    log('[content] Open new chat button clicked');
+    openNewChat();
+  }));
+  body.appendChild(btnRow1);
+
+  body.appendChild(makeDivider());
+
+  // Section: Current chat
+  body.appendChild(makeLabel('💬 Current chat'));
+  var currentChatInfo = document.createElement('div');
+  currentChatInfo.id = 'lz-current-chat';
+  currentChatInfo.style.cssText = 'color:#aaa;font-size:11px;';
+  currentChatInfo.textContent = 'No chat selected';
+  body.appendChild(currentChatInfo);
+
+  body.appendChild(makeButton('Read current chat', '#e67e22', function() {
+    log('[content] Read current chat button clicked');
+    readCurrentChat();
+  }));
+
+  body.appendChild(makeDivider());
+
+  // Section: Test
+  body.appendChild(makeLabel('🧪 Test'));
+  body.appendChild(makeButton('Send test message', '#9b59b6', function() {
+    log('[content] Test send button clicked');
+    sendTestMessage();
+  }));
+
+  body.appendChild(makeDivider());
+
+  // Log
+  body.appendChild(makeLabel('📜 Log'));
+  var logBox = document.createElement('div');
+  logBox.id = 'lz-log';
+  logBox.style.cssText = 'background:#0d0d1a;color:#0f0;font-family:monospace;font-size:10px;padding:6px;border-radius:4px;max-height:120px;overflow-y:auto;line-height:1.4;';
+  logBox.textContent = 'Ready.';
+  body.appendChild(logBox);
+
+  // Toggle body on header click.
+  var expanded = true;
+  header.onclick = function() {
+    body.style.display = expanded ? 'none' : 'flex';
+    expanded = !expanded;
   };
 
-  // Wait for document.body to be available.
+  // Wait for body.
   if (document.body) {
-    document.body.appendChild(badge);
+    document.body.appendChild(panel);
   } else {
     document.addEventListener('DOMContentLoaded', function() {
-      document.body.appendChild(badge);
+      document.body.appendChild(panel);
     });
   }
 
-  console.log('[content] 🌺 Lagestroemia badge added — extension is loaded and running');
+  console.log('[content] 🌺 Lagestroemia control panel added');
+
+  // ---- Helper functions for the panel ----
+
+  function makeDivider() {
+    var d = document.createElement('hr');
+    d.style.cssText = 'border:none;border-top:1px solid #333;margin:4px 0;';
+    return d;
+  }
+
+  function makeLabel(text) {
+    var l = document.createElement('div');
+    l.style.cssText = 'font-weight:600;font-size:11px;color:#ccc;';
+    l.textContent = text;
+    return l;
+  }
+
+  function makeButton(text, color, onClick) {
+    var b = document.createElement('button');
+    b.textContent = text;
+    b.style.cssText = 'flex:1;padding:6px 8px;border:none;border-radius:6px;background:' + color + ';color:white;font-size:11px;cursor:pointer;font-family:inherit;';
+    b.onmouseover = function() { b.style.opacity = '0.85'; };
+    b.onmouseout = function() { b.style.opacity = '1'; };
+    b.onclick = onClick;
+    return b;
+  }
+
+  window.lzLog = function(msg) {
+    var box = document.getElementById('lz-log');
+    if (!box) return;
+    var time = new Date().toLocaleTimeString();
+    var line = document.createElement('div');
+    line.textContent = time + ' ' + msg;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+    while (box.children.length > 50) box.removeChild(box.firstChild);
+  };
+
+  function log(msg) {
+    console.log(msg);
+    window.lzLog(msg.replace('[content] ', ''));
+  }
+
+  // ---- Chat list: read from chat.z.ai's DOM ----
+  window.lzRefreshChatList = function refreshChatList() {
+    log('[content] Refreshing chat list...');
+    var chatListEl = document.getElementById('lz-chat-list');
+    if (chatListEl) chatListEl.innerHTML = '<div style="color:#888">Loading...</div>';
+
+    // Try to read the chat list from chat.z.ai's sidebar.
+    // chat.z.ai uses React with a sidebar that contains chat links.
+    var chats = [];
+
+    // Method 1: look for anchor tags with /c/ in the href (chat URLs).
+    var links = document.querySelectorAll('a[href*="/c/"]');
+    log('[content] Found ' + links.length + ' chat links');
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].getAttribute('href') || '';
+      var title = links[i].textContent.trim().substring(0, 50);
+      var chatId = href.split('/c/')[1];
+      if (chatId && title) {
+        chats.push({ id: chatId, title: title, url: href });
+      }
+    }
+
+    // Method 2: look for elements with chat-like content.
+    if (chats.length === 0) {
+      var items = document.querySelectorAll('[class*="chat"], [class*="conversation"], [class*="history"]');
+      log('[content] Found ' + items.length + ' chat-like elements');
+    }
+
+    // Display.
+    if (chatListEl) {
+      if (chats.length === 0) {
+        chatListEl.innerHTML = '<div style="color:#888">No chats found in DOM. The sidebar may be collapsed.</div>';
+      } else {
+        chatListEl.innerHTML = '';
+        for (var j = 0; j < chats.length; j++) {
+          var div = document.createElement('div');
+          div.style.cssText = 'padding:4px 0;border-bottom:1px solid #222;';
+          div.innerHTML = '<div style="color:#fff">' + escapeHtml(chats[j].title) + '</div>' +
+                          '<div style="color:#666;font-size:10px">ID: ' + chats[j].id.substring(0, 12) + '...</div>';
+          chatListEl.appendChild(div);
+        }
+      }
+    }
+    log('[content] Chat list: ' + chats.length + ' chats found');
+  };
+
+  // ---- Open new chat ----
+  window.lzOpenNewChat = function openNewChat() {
+    log('[content] Opening new chat...');
+    // Navigate to chat.z.ai's root (creates a new chat).
+    window.location.href = 'https://chat.z.ai/';
+    log('[content] Navigated to new chat');
+  };
+
+  // ---- Read current chat ----
+  window.lzReadCurrentChat = function readCurrentChat() {
+    log('[content] Reading current chat...');
+    var infoEl = document.getElementById('lz-current-chat');
+    if (infoEl) infoEl.innerHTML = '<div style="color:#888">Reading...</div>';
+
+    // Get the current URL to extract the chat ID.
+    var url = window.location.href;
+    var chatId = '';
+    var match = url.match(/\/c\/([a-f0-9-]+)/);
+    if (match) chatId = match[1];
+
+    // Try to read messages from the DOM.
+    var messages = [];
+    var msgElements = document.querySelectorAll('[class*="message"], [class*="chat-content"], [class*="prose"]');
+    log('[content] Found ' + msgElements.length + ' message-like elements');
+
+    // Try to read the page title.
+    var title = document.title || 'Unknown';
+
+    // Try to find the model selector value.
+    var model = 'Unknown';
+    var modelSelect = document.querySelector('select, [class*="model"], [class*="ModelSelect"]');
+    if (modelSelect) {
+      model = modelSelect.textContent || modelSelect.value || 'Unknown';
+    }
+
+    var info = 'URL: ' + url + '\n' +
+               'Chat ID: ' + (chatId || 'none') + '\n' +
+               'Title: ' + title + '\n' +
+               'Model: ' + model + '\n' +
+               'Message elements: ' + msgElements.length;
+    log('[content] Current chat info:\n' + info);
+
+    if (infoEl) {
+      infoEl.innerHTML = '<pre style="white-space:pre-wrap;color:#ccc;">' + escapeHtml(info) + '</pre>';
+    }
+  };
+
+  // ---- Send test message ----
+  window.lzSendTestMessage = function sendTestMessage() {
+    log('[content] Sending test message via background...');
+    chrome.runtime.sendMessage({
+      type: 'sendChat',
+      messages: [{ role: 'user', content: 'Hello! This is a test from Lagestroemia.' }],
+      model: 'glm-4.7',
+      options: {},
+    }, function(response) {
+      if (chrome.runtime.lastError) {
+        log('[content] ❌ Error: ' + chrome.runtime.lastError.message);
+      } else if (response && response.ok) {
+        var content = response.chunks.map(function(c) { return c.content || ''; }).join('');
+        log('[content] ✅ Response: ' + content.substring(0, 100));
+      } else {
+        log('[content] ❌ ' + (response ? response.error : 'No response'));
+      }
+    });
+  };
+
+  function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // Auto-refresh on load.
+  setTimeout(function() {
+    window.lzRefreshChatList();
+    window.lzReadCurrentChat();
+  }, 2000);
 })();
 
 // ---- Native messaging status tracking ----
 let nativeReady = false;
 
 function updateBadge() {
-  var badge = document.getElementById('lagestroemia-badge');
-  if (badge) {
-    badge.innerHTML = nativeReady
-      ? '🌺 Lagestroemia — Server on :8081'
-      : '🌺 Lagestroemia — No server (native host not registered)';
-    badge.style.background = nativeReady ? '#27ae60' : '#e67e22';
+  var dot = document.getElementById('lz-status-dot');
+  var line = document.getElementById('lz-status-line');
+  if (dot) {
+    dot.style.background = nativeReady ? '#27ae60' : '#e74c3c';
+  }
+  if (line) {
+    line.textContent = nativeReady ? 'Server on :8081 — connected' : 'No server — native host not connected';
   }
 }
 
