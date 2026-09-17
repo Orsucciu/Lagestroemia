@@ -201,8 +201,36 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _handle_models(self):
-        """Return the model list. Uses a static list for now — the
-        extension could fetch the live list from chat.z.ai if needed."""
+        """Return the model list. Asks the extension for the live list
+        from chat.z.ai's DOM. Falls back to a static list if the
+        extension doesn't respond."""
+        import uuid
+        request_id = str(uuid.uuid4())
+        q = queue.Queue()
+        with _response_queues_lock:
+            _response_queues[request_id] = q
+
+        # Ask the extension for the model list.
+        send_message_to_extension({
+            'type': 'getModels',
+            'requestId': request_id,
+        })
+
+        # Wait up to 5 seconds for the response.
+        try:
+            msg = q.get(timeout=5)
+            if msg.get('type') == 'response' and msg.get('models'):
+                models = [{'id': m, 'object': 'model', 'owned_by': 'z.ai'}
+                          for m in msg['models']]
+                self._send_json(200, {'object': 'list', 'data': models})
+                return
+        except queue.Empty:
+            pass
+        finally:
+            with _response_queues_lock:
+                _response_queues.pop(request_id, None)
+
+        # Fallback: static list.
         models = [
             {'id': 'glm-4.7', 'object': 'model', 'owned_by': 'z.ai'},
             {'id': 'x-preview-l', 'object': 'model', 'owned_by': 'z.ai'},

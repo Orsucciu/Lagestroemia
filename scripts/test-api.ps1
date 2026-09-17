@@ -41,21 +41,27 @@ Write-Ok "$($models.data.Count) models"
 
 # 3. Chat (streaming, with timeout)
 Write-Step "3" "Chat (streaming, 30s timeout)..."
-Write-Info "Sending 'hewwo' to glm-4.7..."
+Write-Info "Sending 'Say hello in French' to x-preview-l..."
 Write-Info "If this hangs, the captcha may be blocking. Check chat.z.ai tab."
 
-$body = @{
-    model = "glm-4.7"
-    messages = @(@{ role = "user"; content = "hewwo" })
+# Write the JSON body to a temp file to avoid PowerShell escaping hell.
+$bodyJson = @{
+    model = "x-preview-l"
+    messages = @(@{ role = "user"; content = "Say hello in French" })
     stream = $true
-} | ConvertTo-Json -Depth 5
+} | ConvertTo-Json -Depth 5 -Compress
+
+$tempFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($tempFile, $bodyJson, [System.Text.Encoding]::UTF8)
+
+Write-Info "Body: $bodyJson"
 
 try {
     $request = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:8081/v1/chat/completions")
     $request.Method = "POST"
     $request.ContentType = "application/json"
     $request.Timeout = 30000
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+    $bytes = [System.IO.File]::ReadAllBytes($tempFile)
     $request.ContentLength = $bytes.Length
     $stream = $request.GetRequestStream()
     $stream.Write($bytes, 0, $bytes.Length)
@@ -114,6 +120,10 @@ try {
     }
 } catch {
     Write-Err "Unexpected error: $($_.Exception.Message)"
+}
+
+} finally {
+    Remove-Item $tempFile -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

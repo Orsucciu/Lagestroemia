@@ -117,6 +117,24 @@ function connectNative() {
           });
         });
       }
+
+      if (msg.type === 'getModels') {
+        // Ask the content script for the model list from the DOM.
+        const requestId = msg.requestId;
+        api.tabs.query({ url: 'https://chat.z.ai/*' }, (tabs) => {
+          if (tabs.length === 0) {
+            sendToNative({ type: 'response', requestId, models: [] });
+            return;
+          }
+          api.tabs.sendMessage(tabs[0].id, { type: 'getModels' }, (response) => {
+            if (api.runtime.lastError || !response || !response.ok) {
+              sendToNative({ type: 'response', requestId, models: [] });
+            } else {
+              sendToNative({ type: 'response', requestId, models: response.models || [] });
+            }
+          });
+        });
+      }
     });
 
     nativePort.onDisconnect.addListener(() => {

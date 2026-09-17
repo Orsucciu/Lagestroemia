@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.2</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.3</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -1274,18 +1274,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'getModels') {
-    getGuestToken().then(token =>
-      fetch(MODELS_URL, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'X-FE-Version': FE_VERSION,
-        },
-        credentials: 'include',
-      })
-    )
-      .then(r => r.json())
-      .then(data => sendResponse({ ok: true, models: data.data || [] }))
-      .catch(err => sendResponse({ ok: false, error: err.message }));
+    // Read models from chat.z.ai's DOM by opening the model selector
+    // dropdown, reading the items, then closing it.
+    console.log('[content] getModels — reading from DOM...');
+
+    var selectorBtn = document.querySelector('[id^="model-selector-"][id$="-button"]');
+    if (!selectorBtn) {
+      console.log('[content] Model selector button not found');
+      sendResponse({ ok: true, models: [] });
+      return true;
+    }
+
+    // Click to open the dropdown.
+    selectorBtn.click();
+
+    setTimeout(function() {
+      var items = document.querySelectorAll('button[aria-label="model-item"]');
+      var models = [];
+      for (var i = 0; i < items.length; i++) {
+        var value = items[i].getAttribute('data-value') || '';
+        if (value) models.push(value);
+      }
+      console.log('[content] Found ' + models.length + ' models in DOM: ' + models.join(', '));
+
+      // Close the dropdown.
+      var modal = document.querySelector('.modal.fixed');
+      if (modal) modal.click();
+
+      sendResponse({ ok: true, models: models });
+    }, 500);
     return true;
   }
 });
