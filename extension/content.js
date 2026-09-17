@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.1</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -84,6 +84,22 @@
     log('Read current chat clicked');
     window.lzReadCurrentChat();
   }));
+
+  body.appendChild(makeDivider());
+
+  // Section: Mode
+  body.appendChild(makeLabel('🔧 Mode'));
+  var modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;gap:6px;';
+  modeRow.appendChild(makeButton('Chat mode', '#3498db', function() {
+    log('Switching to chat mode...');
+    window.lzSetMode('chat');
+  }));
+  modeRow.appendChild(makeButton('Agent mode', '#e74c3c', function() {
+    log('Switching to agent mode...');
+    window.lzSetMode('agent');
+  }));
+  body.appendChild(modeRow);
 
   body.appendChild(makeDivider());
 
@@ -275,10 +291,6 @@
     if (match) chatId = match[1];
 
     // Read messages from the DOM using chat.z.ai's actual CSS classes.
-    // Structure from the HTML:
-    //   <div class="chat-user w-full ...">...</div>       — user message
-    //   <div class="chat-assistant w-full ... svelte-..."> — assistant message
-    //   <p class="svelte-4sys19">actual text here</p>      — message text
     var messages = [];
     var msgContainers = document.querySelectorAll('.chat-user, .chat-assistant');
     log('Found ' + msgContainers.length + ' message containers');
@@ -287,8 +299,6 @@
       var el = msgContainers[i];
       var isUser = el.classList.contains('chat-user');
       var role = isUser ? 'user' : 'assistant';
-
-      // Get the text from <p> elements inside the container.
       var pElements = el.querySelectorAll('p');
       var text = '';
       if (pElements.length > 0) {
@@ -296,17 +306,18 @@
           text += pElements[p].textContent.trim() + '\n';
         }
       } else {
-        // Fallback: get all text content.
         text = el.textContent.trim();
       }
-
       text = text.trim().substring(0, 300);
       if (text.length > 0) {
         messages.push({ role: role, text: text });
       }
     }
 
-    // Get the model from the page — look for model name in buttons.
+    // Detect current mode (chat vs agent).
+    var mode = lzGetMode();
+
+    // Get the model from the page.
     var model = 'Unknown';
     var allButtons = document.querySelectorAll('button');
     for (var b = 0; b < allButtons.length; b++) {
@@ -321,6 +332,7 @@
     var info = 'URL: ' + url + '\n' +
                'Chat ID: ' + (chatId || 'none') + '\n' +
                'Title: ' + title + '\n' +
+               'Mode: ' + mode + '\n' +
                'Model: ' + model + '\n' +
                'Messages: ' + messages.length;
 
@@ -331,11 +343,52 @@
       }
     }
 
-    log('Read ' + messages.length + ' messages, model: ' + model);
+    log('Read ' + messages.length + ' messages, mode: ' + mode + ', model: ' + model);
 
     if (infoEl) {
       infoEl.innerHTML = '<pre style="white-space:pre-wrap;color:#ccc;font-size:10px;">' + escapeHtml(info) + '</pre>';
     }
+  };
+
+  // ---- Mode detection: Chat vs Agent ----
+  // The sidebar has a toggle with two buttons inside a container with
+  // class "gap-1 p-1 mb-5". The first button is Chat mode, the second
+  // is Agent mode. Each has data-active="true" or "false".
+  window.lzGetMode = function getMode() {
+    var container = document.querySelector('.gap-1.p-1.mb-5');
+    if (!container) return 'unknown';
+    var buttons = container.querySelectorAll('button[data-active]');
+    if (buttons.length < 2) return 'unknown';
+    if (buttons[0].getAttribute('data-active') === 'true') return 'chat';
+    if (buttons[1].getAttribute('data-active') === 'true') return 'agent';
+    return 'unknown';
+  };
+
+  // ---- Switch mode: Chat or Agent ----
+  window.lzSetMode = function setMode(mode) {
+    var container = document.querySelector('.gap-1.p-1.mb-5');
+    if (!container) {
+      log('❌ Mode toggle container not found');
+      return false;
+    }
+    var buttons = container.querySelectorAll('button[data-active]');
+    if (buttons.length < 2) {
+      log('❌ Mode toggle buttons not found');
+      return false;
+    }
+
+    var currentMode = lzGetMode();
+    if (currentMode === mode) {
+      log('Already in ' + mode + ' mode');
+      return true;
+    }
+
+    // Click the appropriate button.
+    // Button 0 = chat, Button 1 = agent.
+    var targetBtn = (mode === 'chat') ? buttons[0] : buttons[1];
+    targetBtn.click();
+    log('Switched to ' + mode + ' mode');
+    return true;
   };
 
   // ---- Send test message ----
