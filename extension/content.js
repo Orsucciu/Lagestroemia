@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.1</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.2</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -84,6 +84,64 @@
     log('Read current chat clicked');
     window.lzReadCurrentChat();
   }));
+
+  body.appendChild(makeDivider());
+
+  // Section: Model
+  body.appendChild(makeLabel('🤖 Model'));
+  var modelInfo = document.createElement('div');
+  modelInfo.id = 'lz-model-info';
+  modelInfo.style.cssText = 'color:#aaa;font-size:11px;';
+  modelInfo.textContent = 'Not detected';
+  body.appendChild(modelInfo);
+
+  var modelRow = document.createElement('div');
+  modelRow.style.cssText = 'display:flex;gap:6px;';
+  modelRow.appendChild(makeButton('Detect model', '#3498db', function() {
+    log('Detecting model...');
+    var current = window.lzGetCurrentModel();
+    log('Current model: ' + current);
+    var info = document.getElementById('lz-model-info');
+    if (info) info.textContent = 'Current: ' + current;
+  }));
+  modelRow.appendChild(makeButton('List models', '#27ae60', function() {
+    log('Listing available models...');
+    // Open the dropdown to populate the model items.
+    var btn = document.querySelector('[id^="model-selector-"][id$="-button"]');
+    if (btn) {
+      btn.click();
+      setTimeout(function() {
+        var models = window.lzGetAvailableModels();
+        log('Found ' + models.length + ' models:');
+        for (var i = 0; i < models.length; i++) {
+          log('  ' + models[i].id + ' (' + models[i].name + ')' + (models[i].selected ? ' ← selected' : ''));
+        }
+        // Close the dropdown.
+        var modal = document.querySelector('.modal.fixed');
+        if (modal) modal.click();
+      }, 500);
+    } else {
+      log('❌ Model selector button not found');
+    }
+  }));
+  body.appendChild(modelRow);
+
+  // Quick model switch buttons.
+  var quickModelRow = document.createElement('div');
+  quickModelRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+  var quickModels = ['x-preview-l', 'glm-5.3', 'glm-5.2', 'glm-4.7'];
+  for (var qm = 0; qm < quickModels.length; qm++) {
+    (function(modelId) {
+      var btn = document.createElement('button');
+      btn.textContent = modelId;
+      btn.style.cssText = 'padding:3px 6px;border:1px solid #444;border-radius:4px;background:#222;color:#ccc;font-size:10px;cursor:pointer;font-family:inherit;';
+      btn.onclick = function() {
+        window.lzSetModel(modelId);
+      };
+      quickModelRow.appendChild(btn);
+    })(quickModels[qm]);
+  }
+  body.appendChild(quickModelRow);
 
   body.appendChild(makeDivider());
 
@@ -277,6 +335,91 @@
       log('sidebar-new-chat-button not found, navigating to /');
       window.location.href = 'https://chat.z.ai/';
     }
+  };
+
+  // ---- Model detection + switching ----
+  // The model selector button has id "model-selector-<model>_button"
+  // (e.g. model-selector-glm-5_2-button). It opens a modal dropdown
+  // with buttons[aria-label="model-item"], each having data-value="<model-id>"
+  // and data-selected="true" or "false".
+
+  window.lzGetCurrentModel = function getCurrentModel() {
+    // Method 1: find the model selector button by ID pattern.
+    var btn = document.querySelector('[id^="model-selector-"][id$="-button"]');
+    if (btn) {
+      // The text content is the model display name.
+      var text = btn.textContent.trim();
+      // Extract just the model name (before the dropdown arrow).
+      var match = text.match(/^(GLM-[\d.]+(?:v)?(?:-Flash)?(?:-Turbo)?|Z1-\w+|deep-research|zero)/i);
+      if (match) return match[1];
+      return text;
+    }
+
+    // Method 2: find the selected model in the dropdown.
+    var selected = document.querySelector('button[aria-label="model-item"][data-selected="true"]');
+    if (selected) {
+      return selected.getAttribute('data-value') || 'unknown';
+    }
+
+    return 'unknown';
+  };
+
+  window.lzGetAvailableModels = function getAvailableModels() {
+    var models = [];
+    var items = document.querySelectorAll('button[aria-label="model-item"]');
+    for (var i = 0; i < items.length; i++) {
+      var value = items[i].getAttribute('data-value') || '';
+      var selected = items[i].getAttribute('data-selected') === 'true';
+      // Get the display name from the inner text.
+      var nameEl = items[i].querySelector('.line-clamp-1 > div > div');
+      var name = nameEl ? nameEl.textContent.trim() : value;
+      // Get the description.
+      var descEl = items[i].querySelector('.text-xs.opacity-60');
+      var desc = descEl ? descEl.textContent.trim() : '';
+      if (value) {
+        models.push({ id: value, name: name, description: desc, selected: selected });
+      }
+    }
+    return models;
+  };
+
+  window.lzSetModel = function setModel(modelId) {
+    log('Switching model to: ' + modelId);
+
+    // Step 1: click the model selector button to open the dropdown.
+    var selectorBtn = document.querySelector('[id^="model-selector-"][id$="-button"]');
+    if (!selectorBtn) {
+      log('❌ Model selector button not found');
+      return false;
+    }
+    selectorBtn.click();
+    log('Opened model selector dropdown');
+
+    // Step 2: wait for the dropdown to render, then click the target model.
+    setTimeout(function() {
+      var items = document.querySelectorAll('button[aria-label="model-item"]');
+      log('Found ' + items.length + ' model items in dropdown');
+
+      for (var i = 0; i < items.length; i++) {
+        var value = items[i].getAttribute('data-value') || '';
+        if (value === modelId) {
+          items[i].click();
+          log('✅ Clicked model: ' + modelId);
+          return;
+        }
+      }
+      log('❌ Model "' + modelId + '" not found in dropdown');
+      log('Available: ' + Array.from(items).map(function(b) { return b.getAttribute('data-value'); }).join(', '));
+
+      // Close the dropdown by clicking outside.
+      var modal = document.querySelector('.modal.fixed');
+      if (modal) {
+        modal.click();
+        log('Closed dropdown (model not found)');
+      }
+    }, 500);
+
+    return true;
   };
 
   // ---- Read current chat ----
@@ -1094,10 +1237,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (badge) badge.style.background = '#e74c3c';
     console.log('[content] sendChat received! requestId:', message.requestId, 'model:', message.model);
 
-    // Use the native UI approach: type into #chat-input and click
-    // #send-message-button. This bypasses the captcha entirely —
-    // chat.z.ai handles it natively. The response is watched by
-    // MutationObserver and streamed back.
+    // If a specific model is requested, switch to it first.
+    var switchModel = message.model && message.model !== lzGetCurrentModel();
     var userMessage = message.messages[message.messages.length - 1];
     var text = userMessage.content || '';
     if (typeof text !== 'string') {
@@ -1110,10 +1251,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     }
 
-    window.lzSendMessage(text, message.requestId);
+    if (switchModel) {
+      log('Switching model to ' + message.model + ' before sending...');
+      lzSetModel(message.model);
+      // Wait for the model to switch, then send.
+      setTimeout(function() {
+        window.lzSendMessage(text, message.requestId);
+      }, 1000);
+    } else {
+      window.lzSendMessage(text, message.requestId);
+    }
 
-    // Respond immediately — the actual response comes via streaming
-    // chunks (chatChunk / chatComplete / chatError).
     sendResponse({ ok: true });
     return true;
   }
