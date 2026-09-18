@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.4</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.5</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -543,10 +543,6 @@
   };
 
   // ---- Core: send a message via chat.z.ai's native UI ----
-  // Types text into #chat-input, clicks #send-message-button, and
-  // watches for the response via MutationObserver. The response is
-  // streamed back to the background script (and from there to the
-  // HTTP server / side panel).
   window.lzSendMessage = function sendMessage(text, requestId) {
     requestId = requestId || ('msg-' + Date.now());
     log('Sending via native UI: "' + text.substring(0, 40) + '" (id: ' + requestId + ')');
@@ -554,39 +550,82 @@
     var textarea = document.getElementById('chat-input');
     if (!textarea) {
       log('❌ #chat-input not found');
-      chrome.runtime.sendMessage({ type: 'chatError', requestId: requestId, error: '#chat-input not found' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'chatError', requestId: requestId, error: '#chat-input not found' }).catch(function() {});
       return;
     }
 
-    // Set the value using the native input setter (Svelte-compatible).
+    // Focus the textarea first.
+    textarea.focus();
+
+    // Svelte uses a custom input handler. We need to:
+    // 1. Set the value using the native setter (so the DOM updates)
+    // 2. Dispatch an 'input' event that Svelte's on:input handler catches
+    // 3. Also try keyboard simulation as a fallback
     var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
     nativeInputValueSetter.call(textarea, text);
+
+    // Dispatch input event for Svelte.
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    log('Typed into #chat-input');
+    // Also try 'change' event.
+    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+
+    log('Typed into #chat-input (value: "' + textarea.value.substring(0, 30) + '")');
 
     // Wait for Svelte to register the change, then click send.
     setTimeout(function() {
       var sendBtn = document.getElementById('send-message-button');
       if (sendBtn) {
-        sendBtn.disabled = false;
-        sendBtn.click();
-        log('Clicked #send-message-button');
-
-        // Start watching for the response.
-        watchForResponse(requestId);
+        // Check if the button is still disabled (Svelte hasn't registered
+        // the input yet). If so, try a different approach.
+        if (sendBtn.disabled) {
+          log('Send button is disabled — trying keyboard Enter...');
+          // Simulate pressing Enter in the textarea.
+          textarea.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true,
+          }));
+          textarea.dispatchEvent(new KeyboardEvent('keypress', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true,
+          }));
+          textarea.dispatchEvent(new KeyboardEvent('keyup', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true,
+          }));
+          log('Sent Enter keypress to textarea');
+        } else {
+          // Button is enabled — click it.
+          sendBtn.click();
+          log('Clicked #send-message-button');
+        }
       } else {
         // Try form submit.
         var form = textarea.closest('form');
         if (form) {
           form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
           log('Submitted form');
-          watchForResponse(requestId);
         } else {
           log('❌ No send button or form found');
-          chrome.runtime.sendMessage({ type: 'chatError', requestId: requestId, error: 'No send button found' }).catch(() => {});
+          chrome.runtime.sendMessage({ type: 'chatError', requestId: requestId, error: 'No send button found' }).catch(function() {});
+          return;
         }
       }
-    }, 500);
+
+      // Start watching for the response.
+      watchForResponse(requestId);
+    }, 1000);
   };
 
   // ---- MutationObserver: watch for assistant response ----
