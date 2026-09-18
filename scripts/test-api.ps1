@@ -36,7 +36,7 @@ if ($health.extension_connected) {
 
 # 2. Models
 Write-Step "2" "Models..."
-$models = Invoke-RestMethod -Uri "http://127.0.0.1:8081/v1/models" -Method Get -TimeoutSec 5
+$models = Invoke-RestMethod -Uri "http://127.0.0.1:8081/v1/models" -Method Get -TimeoutSec 15
 Write-Ok "$($models.data.Count) models"
 
 # 3. Chat (streaming, with timeout)

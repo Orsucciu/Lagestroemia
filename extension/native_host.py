@@ -216,9 +216,9 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             'requestId': request_id,
         })
 
-        # Wait up to 5 seconds for the response.
+        # Wait up to 10 seconds for the response.
         try:
-            msg = q.get(timeout=5)
+            msg = q.get(timeout=10)
             if msg.get('type') == 'response' and msg.get('models'):
                 models = [{'id': m, 'object': 'model', 'owned_by': 'z.ai'}
                           for m in msg['models']]
