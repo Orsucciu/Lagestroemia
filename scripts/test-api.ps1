@@ -120,8 +120,6 @@ try {
     }
 } catch {
     Write-Err "Unexpected error: $($_.Exception.Message)"
-}
-
 } finally {
     Remove-Item $tempFile -ErrorAction SilentlyContinue
 }
