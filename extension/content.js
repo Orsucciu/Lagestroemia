@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.3</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.4</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -595,34 +595,43 @@
   // back to the background script. When the assistant message stops
   // growing (streaming complete), sends chatComplete.
   function watchForResponse(requestId) {
-    log('Watching for response...');
+    log('Watching for response (requestId: ' + requestId + ')');
 
-    var chatArea = document.querySelector('.chat-assistant')?.parentElement ||
-                   document.querySelector('[class*="messages"]') ||
-                   document.querySelector('main') ||
-                   document.body;
+    // Observe the entire body — chat.z.ai is a Svelte SPA that
+    // renders messages dynamically. We can't predict the exact
+    // container, so we watch everything and filter for .chat-assistant.
+    var chatArea = document.body;
 
     var lastContent = '';
     var lastLength = 0;
     var stableCount = 0;
     var observer = null;
     var timeout = null;
+    var foundResponse = false;
 
-    // Find the last assistant message before we send (so we can detect
-    // when a NEW one appears).
+    // Count existing .chat-assistant elements before sending.
     var existingAssistant = document.querySelectorAll('.chat-assistant');
     var prevCount = existingAssistant.length;
+    log('Existing .chat-assistant count: ' + prevCount);
 
-    observer = new MutationObserver(function(mutations) {
+    observer = new MutationObserver(function() {
       // Check if a new .chat-assistant appeared.
       var allAssistant = document.querySelectorAll('.chat-assistant');
       if (allAssistant.length > prevCount) {
-        // New assistant message found!
+        foundResponse = true;
+        // New assistant message found! Get the latest one.
         var latest = allAssistant[allAssistant.length - 1];
+
+        // Extract text from all <p> elements inside the assistant message.
         var pElements = latest.querySelectorAll('p');
         var currentContent = '';
-        for (var i = 0; i < pElements.length; i++) {
-          currentContent += pElements[i].textContent;
+        if (pElements.length > 0) {
+          for (var i = 0; i < pElements.length; i++) {
+            currentContent += pElements[i].textContent;
+          }
+        } else {
+          // Fallback: get text content directly.
+          currentContent = latest.textContent || '';
         }
 
         if (currentContent.length > lastLength) {
@@ -632,45 +641,96 @@
           lastContent = currentContent;
           stableCount = 0;
 
+          // Send chunk to background (relays to native host + side panel).
           chrome.runtime.sendMessage({
             type: 'chatChunk',
             requestId: requestId,
             chunk: { content: delta, reasoning: '' },
-          }).catch(() => {});
+          }).catch(function() {});
 
-          log('← chunk: "' + delta.substring(0, 30) + '"');
+          log('chunk: "' + delta.substring(0, 40) + '" (total: ' + lastLength + ' chars)');
         } else if (currentContent.length === lastLength && lastLength > 0) {
           // Content stable — might be done streaming.
           stableCount++;
-          if (stableCount >= 3) {
-            // 3 consecutive checks with no change = stream complete.
-            log('✅ Response complete: ' + lastContent.length + ' chars');
+          if (stableCount >= 5) {
+            // 5 consecutive checks (≈2.5s) with no change = stream complete.
+            log('Response complete: ' + lastContent.length + ' chars');
             chrome.runtime.sendMessage({
               type: 'chatComplete',
               requestId: requestId,
-            }).catch(() => {});
+            }).catch(function() {});
             if (observer) observer.disconnect();
             if (timeout) clearTimeout(timeout);
           }
         }
+      } else if (foundResponse) {
+        // Response was found before but now the count dropped back —
+        // this shouldn't happen, but handle it.
       }
     });
 
+    // Observe the entire body for changes.
     observer.observe(chatArea, {
       childList: true,
       subtree: true,
       characterData: true,
     });
 
+    // Also poll every 500ms as a fallback (MutationObserver might miss
+    // some Svelte updates).
+    var pollInterval = setInterval(function() {
+      var allAssistant = document.querySelectorAll('.chat-assistant');
+      if (allAssistant.length > prevCount) {
+        var latest = allAssistant[allAssistant.length - 1];
+        var pElements = latest.querySelectorAll('p');
+        var currentContent = '';
+        if (pElements.length > 0) {
+          for (var i = 0; i < pElements.length; i++) {
+            currentContent += pElements[i].textContent;
+          }
+        } else {
+          currentContent = latest.textContent || '';
+        }
+
+        if (currentContent.length > lastLength) {
+          var delta = currentContent.substring(lastLength);
+          lastLength = currentContent.length;
+          lastContent = currentContent;
+          stableCount = 0;
+
+          chrome.runtime.sendMessage({
+            type: 'chatChunk',
+            requestId: requestId,
+            chunk: { content: delta, reasoning: '' },
+          }).catch(function() {});
+
+          log('poll chunk: "' + delta.substring(0, 40) + '" (total: ' + lastLength + ')');
+        } else if (currentContent.length === lastLength && lastLength > 0) {
+          stableCount++;
+          if (stableCount >= 5) {
+            log('Response complete (poll): ' + lastContent.length + ' chars');
+            chrome.runtime.sendMessage({
+              type: 'chatComplete',
+              requestId: requestId,
+            }).catch(function() {});
+            if (observer) observer.disconnect();
+            clearInterval(pollInterval);
+            if (timeout) clearTimeout(timeout);
+          }
+        }
+      }
+    }, 500);
+
     // Timeout after 120 seconds.
     timeout = setTimeout(function() {
-      log('⏱ Timeout waiting for response');
+      log('Timeout waiting for response');
       chrome.runtime.sendMessage({
         type: 'chatError',
         requestId: requestId,
         error: 'Timeout waiting for response',
-      }).catch(() => {});
+      }).catch(function() {});
       if (observer) observer.disconnect();
+      clearInterval(pollInterval);
     }, 120000);
   }
 
