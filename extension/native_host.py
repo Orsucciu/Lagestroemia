@@ -203,9 +203,21 @@ def send_request_to_extension(request_id: str, messages: list, model: str,
 class ChatHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler that exposes an OpenAI-compatible API."""
 
+    def _send_cors_headers(self):
+        """Send CORS headers so the content script (running on
+        https://chat.z.ai) can fetch from http://127.0.0.1:8081."""
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(200)
+        self._send_cors_headers()
+        self.end_headers()
+
     def log_message(self, format, *args):
-        # Log to stderr so it doesn't interfere with stdout (which is
-        # used for Native Messaging).
+        # Log to stderr so it doesn't interfere with stdout.
         print(f"[http] {self.address_string()} - {format % args}", file=sys.stderr)
 
     def do_GET(self):
@@ -231,6 +243,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
     def _send_json(self, status, body):
         data = json.dumps(body).encode('utf-8')
         self.send_response(status)
+        self._send_cors_headers()
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
