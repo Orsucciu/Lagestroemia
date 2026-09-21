@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.1</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -742,6 +742,13 @@
     var prevCount = document.querySelectorAll('.chat-assistant').length;
     log('Existing .chat-assistant count: ' + prevCount);
 
+    // Wait for a NEW .chat-assistant to appear, then track its content
+    // growth. We need to distinguish between:
+    // - A placeholder/spinner (whitespace, no real text)
+    // - The actual streaming response
+    // We only start counting "stable" after we've seen real content
+    // (at least 5 non-whitespace characters).
+
     var pollInterval = setInterval(function() {
       var allAssistant = document.querySelectorAll('.chat-assistant');
       if (allAssistant.length > prevCount) {
@@ -756,23 +763,39 @@
           currentContent = latest.textContent || '';
         }
 
-        if (currentContent.length > lastLength) {
+        // Strip whitespace for comparison — chat.z.ai renders
+        // loading spinners as whitespace/punctuation.
+        var trimmedContent = currentContent.trim();
+        var trimmedLast = lastContent.trim();
+
+        if (trimmedContent.length > trimmedLast.length) {
+          // New real text arrived — send the delta.
           var delta = currentContent.substring(lastLength);
           lastLength = currentContent.length;
           lastContent = currentContent;
           stableCount = 0;
 
-          postResponse(requestId, 'streamChunk', {
-            chunk: { content: delta, reasoning: '' },
-          });
-          log('chunk: "' + delta.substring(0, 40) + '" (total: ' + lastLength + ')');
-        } else if (currentContent.length === lastLength && lastLength > 0) {
+          // Only send if the delta has non-whitespace content.
+          if (delta.trim().length > 0) {
+            postResponse(requestId, 'streamChunk', {
+              chunk: { content: delta, reasoning: '' },
+            });
+            log('chunk: "' + delta.trim().substring(0, 40) + '" (total: ' + trimmedContent.length + ' chars)');
+          }
+        } else if (trimmedContent.length === trimmedLast.length && trimmedContent.length > 5) {
+          // Content is stable AND has real text (>5 non-whitespace chars).
+          // Start counting towards completion.
           stableCount++;
-          if (stableCount >= 5) {
-            log('Response complete: ' + lastContent.length + ' chars');
+          if (stableCount >= 8) {
+            // 8 consecutive checks (≈4s) with no change = done.
+            log('Response complete: ' + trimmedContent.length + ' chars');
             postResponse(requestId, 'streamEnd', {});
             clearInterval(pollInterval);
+            return;
           }
+        } else if (trimmedContent.length === 0 && lastLength === 0) {
+          // Still waiting for the response to start rendering.
+          // Don't count this as "stable".
         }
       }
     }, 500);
@@ -782,6 +805,11 @@
       if (lastLength === 0) {
         log('Timeout waiting for response');
         postResponse(requestId, 'error', { error: 'Timeout waiting for response' });
+      } else {
+        // We got some content but the stream didn't end cleanly.
+        // Send streamEnd anyway so the HTTP client gets a response.
+        log('Timeout with partial response (' + lastLength + ' chars) — sending streamEnd');
+        postResponse(requestId, 'streamEnd', {});
       }
       clearInterval(pollInterval);
     }, 120000);
