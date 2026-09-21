@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.2</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.3</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -756,14 +756,24 @@
         var currentContent = '';
 
         // Read ONLY the response text, excluding the "Thinking" section.
-        // Structure inside .chat-assistant:
-        //   .thinking-chain-container (reasoning - SKIP this)
-        //   p.svelte-4sys19 (actual response text - READ this)
-        var allP = latest.querySelectorAll('p');
+        // Structure inside .chat-assistant > .markdown-prose:
+        //   .thinking-chain-container > blockquote > p.svelte-4sys19 (thinking - SKIP)
+        //   p.svelte-4sys19 (direct children = response - READ)
+        //   ul/li (lists in response - READ)
+        var allP = latest.querySelectorAll('p.svelte-4sys19');
+        if (allP.length === 0) {
+          allP = latest.querySelectorAll('p'); // fallback
+        }
         for (var i = 0; i < allP.length; i++) {
+          // Skip if inside a <blockquote> (that's the thinking section).
           var parent = allP[i].parentElement;
           var isThinking = false;
           while (parent && parent !== latest) {
+            if (parent.tagName === 'BLOCKQUOTE') {
+              isThinking = true;
+              break;
+            }
+            // Also check class-based thinking containers.
             if (parent.classList && parent.classList.contains('thinking-chain-container')) {
               isThinking = true;
               break;
@@ -771,31 +781,30 @@
             parent = parent.parentElement;
           }
           if (!isThinking) {
-            currentContent += allP[i].textContent;
+            currentContent += allP[i].textContent + '\n';
           }
         }
 
-        // Fallback: try .markdown-prose outside thinking container.
-        if (currentContent.trim().length === 0) {
-          var proseElements = latest.querySelectorAll('.markdown-prose');
-          for (var j = 0; j < proseElements.length; j++) {
-            var p2 = proseElements[j].parentElement;
-            var isThinking2 = false;
-            while (p2 && p2 !== latest) {
-              if (p2.classList && p2.classList.contains('thinking-chain-container')) {
-                isThinking2 = true;
-                break;
-              }
-              p2 = p2.parentElement;
+        // Also read <li> elements (list items in the response).
+        var allLi = latest.querySelectorAll('li');
+        for (var li = 0; li < allLi.length; li++) {
+          var liParent = allLi[li].parentElement;
+          var liIsThinking = false;
+          while (liParent && liParent !== latest) {
+            if (liParent.tagName === 'BLOCKQUOTE' ||
+                (liParent.classList && liParent.classList.contains('thinking-chain-container'))) {
+              liIsThinking = true;
+              break;
             }
-            if (!isThinking2) {
-              currentContent += proseElements[j].textContent;
+            liParent = liParent.parentElement;
+          }
+          if (!liIsThinking) {
+            var liText = allLi[li].textContent.trim();
+            if (liText.length > 0) {
+              currentContent += '  - ' + liText + '\n';
             }
           }
         }
-
-        // Strip "Thinking..." prefix.
-        currentContent = currentContent.replace(/^Thinking\.\.\.\s*/g, '');
 
         // Strip whitespace for comparison — chat.z.ai renders
         // loading spinners as whitespace/punctuation.
@@ -943,14 +952,24 @@
         var currentContent = '';
 
         // Read ONLY the response text, excluding the "Thinking" section.
-        // Structure inside .chat-assistant:
-        //   .thinking-chain-container (reasoning - SKIP this)
-        //   p.svelte-4sys19 (actual response text - READ this)
-        var allP = latest.querySelectorAll('p');
+        // Structure inside .chat-assistant > .markdown-prose:
+        //   .thinking-chain-container > blockquote > p.svelte-4sys19 (thinking - SKIP)
+        //   p.svelte-4sys19 (direct children = response - READ)
+        //   ul/li (lists in response - READ)
+        var allP = latest.querySelectorAll('p.svelte-4sys19');
+        if (allP.length === 0) {
+          allP = latest.querySelectorAll('p'); // fallback
+        }
         for (var i = 0; i < allP.length; i++) {
+          // Skip if inside a <blockquote> (that's the thinking section).
           var parent = allP[i].parentElement;
           var isThinking = false;
           while (parent && parent !== latest) {
+            if (parent.tagName === 'BLOCKQUOTE') {
+              isThinking = true;
+              break;
+            }
+            // Also check class-based thinking containers.
             if (parent.classList && parent.classList.contains('thinking-chain-container')) {
               isThinking = true;
               break;
@@ -958,31 +977,30 @@
             parent = parent.parentElement;
           }
           if (!isThinking) {
-            currentContent += allP[i].textContent;
+            currentContent += allP[i].textContent + '\n';
           }
         }
 
-        // Fallback: try .markdown-prose outside thinking container.
-        if (currentContent.trim().length === 0) {
-          var proseElements = latest.querySelectorAll('.markdown-prose');
-          for (var j = 0; j < proseElements.length; j++) {
-            var p2 = proseElements[j].parentElement;
-            var isThinking2 = false;
-            while (p2 && p2 !== latest) {
-              if (p2.classList && p2.classList.contains('thinking-chain-container')) {
-                isThinking2 = true;
-                break;
-              }
-              p2 = p2.parentElement;
+        // Also read <li> elements (list items in the response).
+        var allLi = latest.querySelectorAll('li');
+        for (var li = 0; li < allLi.length; li++) {
+          var liParent = allLi[li].parentElement;
+          var liIsThinking = false;
+          while (liParent && liParent !== latest) {
+            if (liParent.tagName === 'BLOCKQUOTE' ||
+                (liParent.classList && liParent.classList.contains('thinking-chain-container'))) {
+              liIsThinking = true;
+              break;
             }
-            if (!isThinking2) {
-              currentContent += proseElements[j].textContent;
+            liParent = liParent.parentElement;
+          }
+          if (!liIsThinking) {
+            var liText = allLi[li].textContent.trim();
+            if (liText.length > 0) {
+              currentContent += '  - ' + liText + '\n';
             }
           }
         }
-
-        // Strip "Thinking..." prefix.
-        currentContent = currentContent.replace(/^Thinking\.\.\.\s*/g, '');
 
         if (currentContent.length > lastLength) {
           var delta = currentContent.substring(lastLength);
