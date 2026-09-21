@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.3</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.7.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -675,8 +675,9 @@
   };
 
   // ---- Send message via native UI, stream response via HTTP ----
-  window.lzSendMessageHTTP = function sendMessageHTTP(text, requestId) {
-    log('Sending via native UI: "' + text.substring(0, 40) + '" (id: ' + requestId + ')');
+  window.lzSendMessageHTTP = function sendMessageHTTP(text, requestId, retryCount) {
+    retryCount = retryCount || 0;
+    log('Sending via native UI: "' + text.substring(0, 40) + '" (id: ' + requestId + ', retry: ' + retryCount + ')');
 
     var textarea = document.getElementById('chat-input');
     if (!textarea) {
@@ -718,7 +719,8 @@
       }
 
       // Watch for response and stream via HTTP.
-      watchForResponseHTTP(requestId);
+      // Pass originalText + retryCount for capacity retry handling.
+      watchForResponseHTTP(requestId, text, retryCount);
     }, 1000);
   };
 
@@ -733,13 +735,19 @@
   }
 
   // ---- Watch for response and stream via HTTP ----
-  function watchForResponseHTTP(requestId) {
-    log('Watching for response (HTTP mode, id: ' + requestId + ')');
+  // Also handles MODEL_CONCURRENCY_LIMIT: when chat.z.ai shows a
+  // "Currently in peak hours" modal, we close it, wait with
+  // exponential backoff (X + X/2, capped at 1800s), then retry
+  // sending the same message.
+  function watchForResponseHTTP(requestId, originalText, retryCount) {
+    retryCount = retryCount || 0;
+    log('Watching for response (HTTP mode, id: ' + requestId + ', retry: ' + retryCount + ')');
 
     var lastLength = 0;
     var lastContent = '';
     var stableCount = 0;
     var prevCount = document.querySelectorAll('.chat-assistant').length;
+    var capacityDetected = false;
     log('Existing .chat-assistant count: ' + prevCount);
 
     // Wait for a NEW .chat-assistant to appear, then track its content
@@ -750,6 +758,45 @@
     // (at least 5 non-whitespace characters).
 
     var pollInterval = setInterval(function() {
+      // Check for capacity modal ("Currently in peak hours").
+      var capacityModal = document.querySelector('[data-dialog-title]');
+      if (capacityModal && capacityModal.textContent.indexOf('peak hours') >= 0) {
+        if (!capacityDetected) {
+          capacityDetected = true;
+          log('Model at capacity - closing modal and retrying...');
+
+          // Close the modal.
+          var closeBtn = document.querySelector('[data-dialog-close]');
+          if (closeBtn) closeBtn.click();
+          else {
+            var btns = document.querySelectorAll('[role="dialog"] button');
+            for (var b = 0; b < btns.length; b++) {
+              if (btns[b].textContent.trim() === 'Cancel') { btns[b].click(); break; }
+            }
+          }
+
+          clearInterval(pollInterval);
+
+          // Exponential backoff: X + X/2, where X = 30 * 2^retryCount.
+          // Capped at 1800 seconds (30 minutes).
+          var baseWait = 30 * Math.pow(2, retryCount);
+          var waitSec = Math.min(baseWait + Math.floor(baseWait / 2), 1800);
+          log('Waiting ' + waitSec + 's before retry ' + (retryCount + 1) + '...');
+
+          // Send status so the HTTP client knows we're waiting.
+          postResponse(requestId, 'streamChunk', {
+            chunk: { content: '', reasoning: '' },
+            status: 'Model at capacity. Retrying in ' + waitSec + 's (attempt ' + (retryCount + 1) + ')...',
+          });
+
+          setTimeout(function() {
+            log('Retrying (attempt ' + (retryCount + 1) + ')...');
+            window.lzSendMessageHTTP(originalText, requestId, retryCount + 1);
+          }, waitSec * 1000);
+          return;
+        }
+      }
+
       var allAssistant = document.querySelectorAll('.chat-assistant');
       if (allAssistant.length > prevCount) {
         var latest = allAssistant[allAssistant.length - 1];
