@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.7.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.8.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -83,6 +83,26 @@
   body.appendChild(makeButton('Read current chat', '#e67e22', function() {
     log('Read current chat clicked');
     window.lzReadCurrentChat();
+  }));
+  body.appendChild(makeButton('Save chat locally', '#27ae60', function() {
+    log('Save chat clicked');
+    window.lzSaveCurrentChat();
+  }));
+
+  body.appendChild(makeDivider());
+
+  // Section: Server
+  body.appendChild(makeLabel('🌐 Server'));
+  var serverUrlInput = document.createElement('input');
+  serverUrlInput.id = 'lz-server-url';
+  serverUrlInput.type = 'text';
+  serverUrlInput.placeholder = 'http://127.0.0.1:8081';
+  serverUrlInput.value = localStorage.getItem('lagestroemia_server_url') || 'http://127.0.0.1:8081';
+  serverUrlInput.style.cssText = 'width:100%;padding:4px 6px;border:1px solid #444;border-radius:4px;background:#222;color:#ccc;font-size:11px;font-family:inherit;';
+  body.appendChild(serverUrlInput);
+  body.appendChild(makeButton('Save server URL', '#27ae60', function() {
+    var url = document.getElementById('lz-server-url').value.trim();
+    window.lzSetServerUrl(url);
   }));
 
   body.appendChild(makeDivider());
@@ -422,6 +442,98 @@
     return true;
   };
 
+  // ---- Local chat storage ----
+  // Stores chats in localStorage as JSON. Key: lagestroemia_chats
+  // Structure: [{ id, title, model, messages: [{role, content, timestamp}], createdAt, updatedAt }]
+  window.lzGetChats = function() {
+    try {
+      return JSON.parse(localStorage.getItem('lagestroemia_chats') || '[]');
+    } catch { return []; }
+  };
+
+  window.lzSaveChat = function(chatId, messages, model) {
+    var chats = window.lzGetChats();
+    var existing = chats.find(function(c) { return c.id === chatId; });
+    var now = Date.now();
+    var title = messages.length > 0 ? messages[0].content.substring(0, 50) : 'Untitled';
+
+    if (existing) {
+      existing.messages = messages;
+      existing.model = model || existing.model;
+      existing.updatedAt = now;
+    } else {
+      chats.push({
+        id: chatId,
+        title: title,
+        model: model || 'unknown',
+        messages: messages,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    localStorage.setItem('lagestroemia_chats', JSON.stringify(chats));
+    log('Saved chat ' + chatId.substring(0, 8) + ' (' + messages.length + ' messages)');
+  };
+
+  window.lzLoadChat = function(chatId) {
+    var chats = window.lzGetChats();
+    return chats.find(function(c) { return c.id === chatId; }) || null;
+  };
+
+  window.lzDeleteChat = function(chatId) {
+    var chats = window.lzGetChats();
+    chats = chats.filter(function(c) { return c.id !== chatId; });
+    localStorage.setItem('lagestroemia_chats', JSON.stringify(chats));
+    log('Deleted chat ' + chatId.substring(0, 8));
+  };
+
+  window.lzGetCurrentChatId = function() {
+    var match = window.location.href.match(/\/c\/([a-f0-9-]+)/);
+    return match ? match[1] : null;
+  };
+
+  window.lzSaveCurrentChat = function() {
+    var chatId = window.lzGetCurrentChatId();
+    if (!chatId) { log('No chat ID in URL'); return; }
+
+    // Read messages from DOM.
+    var messages = [];
+    var msgContainers = document.querySelectorAll('.chat-user, .chat-assistant');
+    for (var i = 0; i < msgContainers.length; i++) {
+      var el = msgContainers[i];
+      var role = el.classList.contains('chat-user') ? 'user' : 'assistant';
+
+      // For assistant: skip thinking, read only response.
+      var text = '';
+      if (role === 'assistant') {
+        var allP = el.querySelectorAll('p.svelte-4sys19');
+        if (allP.length === 0) allP = el.querySelectorAll('p');
+        for (var p = 0; p < allP.length; p++) {
+          var parent = allP[p].parentElement;
+          var isThinking = false;
+          while (parent && parent !== el) {
+            if (parent.tagName === 'BLOCKQUOTE' ||
+                (parent.classList && parent.classList.contains('thinking-chain-container'))) {
+              isThinking = true; break;
+            }
+            parent = parent.parentElement;
+          }
+          if (!isThinking) text += allP[p].textContent + '\n';
+        }
+      } else {
+        text = el.textContent.trim();
+      }
+      text = text.trim();
+      if (text.length > 0) {
+        messages.push({ role: role, content: text, timestamp: Date.now() });
+      }
+    }
+
+    var model = window.lzGetCurrentModel();
+    window.lzSaveChat(chatId, messages, model);
+    log('Saved current chat: ' + messages.length + ' messages');
+  };
+
   // ---- Read current chat ----
   window.lzReadCurrentChat = function readCurrentChat() {
     log('Reading current chat...');
@@ -628,19 +740,25 @@
     }, 1000);
   };
 
-  // ---- HTTP polling: poll localhost:8081 for pending requests ----
-  // This bypasses native messaging stdout entirely. The HTTP server
-  // (native_host.py) puts chat requests in a pending list. We poll
-  // GET /_pending every 500ms. When we get a request, we process it
-  // (type into chat.z.ai, watch DOM) and POST the response chunks
-  // back to POST /_response.
+  // ---- HTTP polling: poll localhost for pending requests ----
+  // The server URL is configurable via localStorage. Default: http://127.0.0.1:8081
+  window.lzGetServerUrl = function() {
+    return localStorage.getItem('lagestroemia_server_url') || 'http://127.0.0.1:8081';
+  };
+
+  window.lzSetServerUrl = function(url) {
+    localStorage.setItem('lagestroemia_server_url', url);
+    log('Server URL set to: ' + url);
+  };
+
   window.lzStartPolling = function startPolling() {
     if (window._lzPolling) return;
     window._lzPolling = true;
-    log('Starting HTTP polling for pending requests...');
+    var serverUrl = window.lzGetServerUrl();
+    log('Starting HTTP polling at ' + serverUrl + '/_pending ...');
 
     setInterval(function() {
-      fetch('http://127.0.0.1:8081/_pending')
+      fetch(serverUrl + '/_pending')
         .then(function(r) { return r.json(); })
         .then(function(req) {
           if (req.type === 'none' || !req.type) return;
@@ -648,7 +766,6 @@
           log('Received pending request: ' + req.type + ' (id: ' + req.requestId + ')');
 
           if (req.type === 'sendChat') {
-            // Extract the user message text.
             var userMessage = req.messages[req.messages.length - 1];
             var text = userMessage.content || '';
             if (typeof text !== 'string') {
@@ -659,10 +776,6 @@
                 }
               }
             }
-
-            // Send the message via native UI + watch for response.
-            // The watchForResponse function needs to POST chunks to
-            // /_response instead of using chrome.runtime.sendMessage.
             window.lzSendMessageHTTP(text, req.requestId);
           }
         })
@@ -727,7 +840,7 @@
   // ---- Post a response chunk to the HTTP server ----
   function postResponse(requestId, type, data) {
     var body = JSON.stringify(Object.assign({ requestId: requestId, type: type }, data));
-    fetch('http://127.0.0.1:8081/_response', {
+    fetch(window.lzGetServerUrl() + '/_response', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: body,
@@ -877,9 +990,30 @@
           // Start counting towards completion.
           stableCount++;
           if (stableCount >= 8) {
-            // 8 consecutive checks (≈4s) with no change = done.
+            // 8 consecutive checks (~4s) with no change = done.
             log('Response complete: ' + trimmedContent.length + ' chars');
             postResponse(requestId, 'streamEnd', {});
+
+            // Auto-save the chat to local storage + HTTP server.
+            try {
+              window.lzSaveCurrentChat();
+              // Also save to the HTTP server's SQLite DB.
+              var chatId = window.lzGetCurrentChatId();
+              if (chatId) {
+                var chats = window.lzGetChats();
+                var chat = chats.find(function(c) { return c.id === chatId; });
+                if (chat) {
+                  fetch(window.lzGetServerUrl() + '/v1/chats', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(chat),
+                  }).catch(function() {});
+                }
+              }
+            } catch(e) {
+              log('Auto-save failed: ' + e.message);
+            }
+
             clearInterval(pollInterval);
             return;
           }

@@ -40,3 +40,4 @@ scripts/extension-chrome/
 scripts/extension-firefox/
 extension/__pycache__/
 *.pyc
+extension/chats.db

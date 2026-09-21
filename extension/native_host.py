@@ -39,6 +39,8 @@ import time
 import http.server
 import socketserver
 import queue
+import os
+import sqlite3
 from typing import Optional
 
 # ---- Native Messaging I/O ----
@@ -229,6 +231,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._handle_pending()
         elif self.path == '/_debug':
             self._handle_debug()
+        elif self.path == '/v1/chats':
+            self._handle_list_chats()
+        elif self.path.startswith('/v1/chats/'):
+            chat_id = self.path.split('/v1/chats/')[1]
+            self._handle_get_chat(chat_id)
         else:
             self._send_json(404, {'error': {'message': 'Not found'}})
 
@@ -237,6 +244,15 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._handle_chat()
         elif self.path == '/_response':
             self._handle_response()
+        elif self.path == '/v1/chats':
+            self._handle_save_chat()
+        else:
+            self._send_json(404, {'error': {'message': 'Not found'}})
+
+    def do_DELETE(self):
+        if self.path.startswith('/v1/chats/'):
+            chat_id = self.path.split('/v1/chats/')[1]
+            self._handle_delete_chat(chat_id)
         else:
             self._send_json(404, {'error': {'message': 'Not found'}})
 
@@ -539,6 +555,96 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             'pending_details': list(_pending_requests) if pending_count > 0 else [],
         })
 
+    def _handle_list_chats(self):
+        """GET /v1/chats — list all saved chats."""
+        with _chat_db_lock:
+            conn = _get_chat_db()
+            rows = conn.execute(
+                'SELECT id, title, model, created_at, updated_at FROM chats ORDER BY updated_at DESC'
+            ).fetchall()
+            conn.close()
+        chats = [{
+            'id': r[0], 'title': r[1], 'model': r[2],
+            'created_at': r[3], 'updated_at': r[4],
+        } for r in rows]
+        self._send_json(200, {'chats': chats})
+
+    def _handle_get_chat(self, chat_id):
+        """GET /v1/chats/<id> — get a specific chat with all messages."""
+        with _chat_db_lock:
+            conn = _get_chat_db()
+            row = conn.execute(
+                'SELECT id, title, model, messages, created_at, updated_at FROM chats WHERE id = ?',
+                (chat_id,)
+            ).fetchone()
+            conn.close()
+        if not row:
+            self._send_json(404, {'error': {'message': 'Chat not found'}})
+            return
+        self._send_json(200, {
+            'id': row[0], 'title': row[1], 'model': row[2],
+            'messages': json.loads(row[3]),
+            'created_at': row[4], 'updated_at': row[5],
+        })
+
+    def _handle_save_chat(self):
+        """POST /v1/chats — save or update a chat.
+        Body: {id, title, model, messages}"""
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        try:
+            req = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_json(400, {'error': 'Invalid JSON'})
+            return
+        chat_id = req.get('id', '')
+        title = req.get('title', 'Untitled')
+        model = req.get('model', 'unknown')
+        messages = json.dumps(req.get('messages', []))
+        now = int(time.time())
+
+        with _chat_db_lock:
+            conn = _get_chat_db()
+            conn.execute('''
+                INSERT OR REPLACE INTO chats (id, title, model, messages, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (chat_id, title, model, messages, now, now))
+            conn.commit()
+            conn.close()
+        self._send_json(200, {'ok': True, 'id': chat_id})
+
+    def _handle_delete_chat(self, chat_id):
+        """DELETE /v1/chats/<id> — delete a chat."""
+        with _chat_db_lock:
+            conn = _get_chat_db()
+            conn.execute('DELETE FROM chats WHERE id = ?', (chat_id,))
+            conn.commit()
+            conn.close()
+        self._send_json(200, {'ok': True})
+
+
+# ---- Local chat storage (SQLite) ----
+
+_chat_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chats.db')
+_chat_db_lock = threading.Lock()
+
+
+def _get_chat_db():
+    """Returns a SQLite connection to the local chat database."""
+    conn = sqlite3.connect(_chat_db_path, check_same_thread=False)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS chats (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            model TEXT,
+            messages TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+    ''')
+    conn.commit()
+    return conn
+
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """Multi-threaded HTTP server so we can handle multiple concurrent requests."""
@@ -549,21 +655,32 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 # ---- Main ----
 
 def main():
-    PORT = 8081
+    # Port can be configured via:
+    #   1. Command-line arg: python native_host.py --port 9090
+    #   2. Environment variable: LAGESTROEMIA_PORT=9090
+    #   3. Default: 8081
+    import argparse
+    parser = argparse.ArgumentParser(description='Lagestroemia native host')
+    parser.add_argument('--port', type=int, default=None,
+                        help='Port to listen on (default: 8081)')
+    parser.add_argument('--host', type=str, default='127.0.0.1',
+                        help='Host to bind to (default: 127.0.0.1)')
+    args, _ = parser.parse_known_args()
+
+    PORT = args.port or int(os.environ.get('LAGESTROEMIA_PORT', '8081'))
+    HOST = args.host or os.environ.get('LAGESTROEMIA_HOST', '127.0.0.1')
 
     # Start the HTTP server FIRST (before the stdin reader). This
     # ensures the server is immediately available even if the stdin
     # reader blocks (which it does on Windows when run standalone).
     try:
-        server = ThreadedHTTPServer(('127.0.0.1', PORT), ChatHandler)
+        server = ThreadedHTTPServer((HOST, PORT), ChatHandler)
     except OSError as e:
-        # Port already in use — another instance is running.
-        print(f"[native] Port {PORT} already in use ({e}). "
-              f"Another instance may be running.", file=sys.stderr)
+        print(f"[native] Port {PORT} already in use ({e}).", file=sys.stderr)
         print("[native] Exiting. Close the other instance first.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[native] HTTP server listening on http://127.0.0.1:{PORT}", file=sys.stderr)
+    print(f"[native] HTTP server listening on http://{HOST}:{PORT}", file=sys.stderr)
     print(f"[native] OpenAI-compatible API:", file=sys.stderr)
     print(f"[native]   GET  /v1/models", file=sys.stderr)
     print(f"[native]   POST /v1/chat/completions", file=sys.stderr)
