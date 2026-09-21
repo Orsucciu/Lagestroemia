@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.1</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.2</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -753,15 +753,49 @@
       var allAssistant = document.querySelectorAll('.chat-assistant');
       if (allAssistant.length > prevCount) {
         var latest = allAssistant[allAssistant.length - 1];
-        var pElements = latest.querySelectorAll('p');
         var currentContent = '';
-        if (pElements.length > 0) {
-          for (var i = 0; i < pElements.length; i++) {
-            currentContent += pElements[i].textContent;
+
+        // Read ONLY the response text, excluding the "Thinking" section.
+        // Structure inside .chat-assistant:
+        //   .thinking-chain-container (reasoning - SKIP this)
+        //   p.svelte-4sys19 (actual response text - READ this)
+        var allP = latest.querySelectorAll('p');
+        for (var i = 0; i < allP.length; i++) {
+          var parent = allP[i].parentElement;
+          var isThinking = false;
+          while (parent && parent !== latest) {
+            if (parent.classList && parent.classList.contains('thinking-chain-container')) {
+              isThinking = true;
+              break;
+            }
+            parent = parent.parentElement;
           }
-        } else {
-          currentContent = latest.textContent || '';
+          if (!isThinking) {
+            currentContent += allP[i].textContent;
+          }
         }
+
+        // Fallback: try .markdown-prose outside thinking container.
+        if (currentContent.trim().length === 0) {
+          var proseElements = latest.querySelectorAll('.markdown-prose');
+          for (var j = 0; j < proseElements.length; j++) {
+            var p2 = proseElements[j].parentElement;
+            var isThinking2 = false;
+            while (p2 && p2 !== latest) {
+              if (p2.classList && p2.classList.contains('thinking-chain-container')) {
+                isThinking2 = true;
+                break;
+              }
+              p2 = p2.parentElement;
+            }
+            if (!isThinking2) {
+              currentContent += proseElements[j].textContent;
+            }
+          }
+        }
+
+        // Strip "Thinking..." prefix.
+        currentContent = currentContent.replace(/^Thinking\.\.\.\s*/g, '');
 
         // Strip whitespace for comparison — chat.z.ai renders
         // loading spinners as whitespace/punctuation.
@@ -906,15 +940,49 @@
       var allAssistant = document.querySelectorAll('.chat-assistant');
       if (allAssistant.length > prevCount) {
         var latest = allAssistant[allAssistant.length - 1];
-        var pElements = latest.querySelectorAll('p');
         var currentContent = '';
-        if (pElements.length > 0) {
-          for (var i = 0; i < pElements.length; i++) {
-            currentContent += pElements[i].textContent;
+
+        // Read ONLY the response text, excluding the "Thinking" section.
+        // Structure inside .chat-assistant:
+        //   .thinking-chain-container (reasoning - SKIP this)
+        //   p.svelte-4sys19 (actual response text - READ this)
+        var allP = latest.querySelectorAll('p');
+        for (var i = 0; i < allP.length; i++) {
+          var parent = allP[i].parentElement;
+          var isThinking = false;
+          while (parent && parent !== latest) {
+            if (parent.classList && parent.classList.contains('thinking-chain-container')) {
+              isThinking = true;
+              break;
+            }
+            parent = parent.parentElement;
           }
-        } else {
-          currentContent = latest.textContent || '';
+          if (!isThinking) {
+            currentContent += allP[i].textContent;
+          }
         }
+
+        // Fallback: try .markdown-prose outside thinking container.
+        if (currentContent.trim().length === 0) {
+          var proseElements = latest.querySelectorAll('.markdown-prose');
+          for (var j = 0; j < proseElements.length; j++) {
+            var p2 = proseElements[j].parentElement;
+            var isThinking2 = false;
+            while (p2 && p2 !== latest) {
+              if (p2.classList && p2.classList.contains('thinking-chain-container')) {
+                isThinking2 = true;
+                break;
+              }
+              p2 = p2.parentElement;
+            }
+            if (!isThinking2) {
+              currentContent += proseElements[j].textContent;
+            }
+          }
+        }
+
+        // Strip "Thinking..." prefix.
+        currentContent = currentContent.replace(/^Thinking\.\.\.\s*/g, '');
 
         if (currentContent.length > lastLength) {
           var delta = currentContent.substring(lastLength);
