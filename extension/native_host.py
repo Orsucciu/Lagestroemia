@@ -157,14 +157,18 @@ def send_request_to_extension(request_id: str, messages: list, model: str,
     with _response_queues_lock:
         _response_queues[request_id] = q
 
-    send_message_to_extension({
+    msg = {
         'type': 'sendChat',
         'requestId': request_id,
         'messages': messages,
         'model': model,
         'stream': stream,
         'options': options or {},
-    })
+    }
+    print(f"[native] Sending sendChat to extension: requestId={request_id}, "
+          f"model={model}, messages={len(messages)}", file=sys.stderr)
+    send_message_to_extension(msg)
+    print(f"[native] sendChat sent ({len(json.dumps(msg).encode())} bytes)", file=sys.stderr)
     return q
 
 
@@ -274,8 +278,13 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         import uuid
         request_id = str(uuid.uuid4())
 
+        print(f"[native] Chat request received: model={model}, stream={stream}, "
+              f"messages={len(messages)}, requestId={request_id}", file=sys.stderr)
+
         # Send the request to the extension.
         q = send_request_to_extension(request_id, messages, model, stream)
+
+        print(f"[native] Waiting for response on queue {request_id}...", file=sys.stderr)
 
         if stream:
             self._handle_streaming_response(q, request_id, model)
