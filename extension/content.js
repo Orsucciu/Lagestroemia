@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.5</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.6</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -1336,12 +1336,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (badge) badge.style.background = '#e74c3c';
     console.log('[content] sendChat received! requestId:', message.requestId, 'model:', message.model);
 
-    // If a specific model is requested, switch to it first.
-    var switchModel = message.model && message.model !== lzGetCurrentModel();
+    // Extract the user message text.
     var userMessage = message.messages[message.messages.length - 1];
     var text = userMessage.content || '';
     if (typeof text !== 'string') {
-      // Multi-modal content — extract text parts.
       text = '';
       for (var p = 0; p < userMessage.content.length; p++) {
         if (userMessage.content[p].type === 'text') {
@@ -1350,16 +1348,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     }
 
-    if (switchModel) {
-      log('Switching model to ' + message.model + ' before sending...');
-      lzSetModel(message.model);
-      // Wait for the model to switch, then send.
-      setTimeout(function() {
-        window.lzSendMessage(text, message.requestId);
-      }, 1000);
-    } else {
-      window.lzSendMessage(text, message.requestId);
+    // Don't try to switch models — just use whatever is currently
+    // selected on chat.z.ai. Guest users can't switch models anyway.
+    // If a model is requested, log it but don't attempt to change it.
+    if (message.model) {
+      console.log('[content] Requested model:', message.model, '(using whatever is selected on the page)');
     }
+
+    // Send the message via the native UI.
+    window.lzSendMessage(text, message.requestId);
 
     sendResponse({ ok: true });
     return true;
