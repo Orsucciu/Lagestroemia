@@ -30,7 +30,7 @@
   // Header.
   var header = document.createElement('div');
   header.style.cssText = 'background:#7C4DFF;padding:8px 12px;border-radius:12px 12px 0 0;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;';
-  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.5.6</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
+  header.innerHTML = '<span>🌺 Lagestroemia <span id="lz-version" style="font-size:10px;opacity:0.7">v0.6.0</span></span><span id="lz-status-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e74c3c;"></span><span id="lz-close-btn" style="margin-left:8px;cursor:pointer;font-size:16px;line-height:1;">×</span>';
   panel.appendChild(header);
 
   // Body.
@@ -628,7 +628,164 @@
     }, 1000);
   };
 
-  // ---- MutationObserver: watch for assistant response ----
+  // ---- HTTP polling: poll localhost:8081 for pending requests ----
+  // This bypasses native messaging stdout entirely. The HTTP server
+  // (native_host.py) puts chat requests in a pending list. We poll
+  // GET /_pending every 500ms. When we get a request, we process it
+  // (type into chat.z.ai, watch DOM) and POST the response chunks
+  // back to POST /_response.
+  window.lzStartPolling = function startPolling() {
+    if (window._lzPolling) return;
+    window._lzPolling = true;
+    log('Starting HTTP polling for pending requests...');
+
+    setInterval(function() {
+      fetch('http://127.0.0.1:8081/_pending')
+        .then(function(r) { return r.json(); })
+        .then(function(req) {
+          if (req.type === 'none' || !req.type) return;
+
+          log('Received pending request: ' + req.type + ' (id: ' + req.requestId + ')');
+
+          if (req.type === 'sendChat') {
+            // Extract the user message text.
+            var userMessage = req.messages[req.messages.length - 1];
+            var text = userMessage.content || '';
+            if (typeof text !== 'string') {
+              text = '';
+              for (var p = 0; p < userMessage.content.length; p++) {
+                if (userMessage.content[p].type === 'text') {
+                  text += userMessage.content[p].text;
+                }
+              }
+            }
+
+            // Send the message via native UI + watch for response.
+            // The watchForResponse function needs to POST chunks to
+            // /_response instead of using chrome.runtime.sendMessage.
+            window.lzSendMessageHTTP(text, req.requestId);
+          }
+        })
+        .catch(function(err) {
+          // Silent — server might be temporarily unavailable.
+        });
+    }, 500);
+
+    log('Polling started (every 500ms)');
+  };
+
+  // ---- Send message via native UI, stream response via HTTP ----
+  window.lzSendMessageHTTP = function sendMessageHTTP(text, requestId) {
+    log('Sending via native UI: "' + text.substring(0, 40) + '" (id: ' + requestId + ')');
+
+    var textarea = document.getElementById('chat-input');
+    if (!textarea) {
+      log('#chat-input not found');
+      postResponse(requestId, 'error', { error: '#chat-input not found' });
+      return;
+    }
+
+    textarea.focus();
+    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    nativeInputValueSetter.call(textarea, text);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    log('Typed into #chat-input');
+
+    setTimeout(function() {
+      var sendBtn = document.getElementById('send-message-button');
+      if (sendBtn) {
+        if (sendBtn.disabled) {
+          log('Send button disabled — trying Enter...');
+          textarea.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+            bubbles: true, cancelable: true,
+          }));
+          log('Sent Enter keypress');
+        } else {
+          sendBtn.click();
+          log('Clicked #send-message-button');
+        }
+      } else {
+        var form = textarea.closest('form');
+        if (form) {
+          form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          log('Submitted form');
+        } else {
+          postResponse(requestId, 'error', { error: 'No send button found' });
+          return;
+        }
+      }
+
+      // Watch for response and stream via HTTP.
+      watchForResponseHTTP(requestId);
+    }, 1000);
+  };
+
+  // ---- Post a response chunk to the HTTP server ----
+  function postResponse(requestId, type, data) {
+    var body = JSON.stringify(Object.assign({ requestId: requestId, type: type }, data));
+    fetch('http://127.0.0.1:8081/_response', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body,
+    }).catch(function() {});
+  }
+
+  // ---- Watch for response and stream via HTTP ----
+  function watchForResponseHTTP(requestId) {
+    log('Watching for response (HTTP mode, id: ' + requestId + ')');
+
+    var lastLength = 0;
+    var lastContent = '';
+    var stableCount = 0;
+    var prevCount = document.querySelectorAll('.chat-assistant').length;
+    log('Existing .chat-assistant count: ' + prevCount);
+
+    var pollInterval = setInterval(function() {
+      var allAssistant = document.querySelectorAll('.chat-assistant');
+      if (allAssistant.length > prevCount) {
+        var latest = allAssistant[allAssistant.length - 1];
+        var pElements = latest.querySelectorAll('p');
+        var currentContent = '';
+        if (pElements.length > 0) {
+          for (var i = 0; i < pElements.length; i++) {
+            currentContent += pElements[i].textContent;
+          }
+        } else {
+          currentContent = latest.textContent || '';
+        }
+
+        if (currentContent.length > lastLength) {
+          var delta = currentContent.substring(lastLength);
+          lastLength = currentContent.length;
+          lastContent = currentContent;
+          stableCount = 0;
+
+          postResponse(requestId, 'streamChunk', {
+            chunk: { content: delta, reasoning: '' },
+          });
+          log('chunk: "' + delta.substring(0, 40) + '" (total: ' + lastLength + ')');
+        } else if (currentContent.length === lastLength && lastLength > 0) {
+          stableCount++;
+          if (stableCount >= 5) {
+            log('Response complete: ' + lastContent.length + ' chars');
+            postResponse(requestId, 'streamEnd', {});
+            clearInterval(pollInterval);
+          }
+        }
+      }
+    }, 500);
+
+    // Timeout after 120 seconds.
+    setTimeout(function() {
+      if (lastLength === 0) {
+        log('Timeout waiting for response');
+        postResponse(requestId, 'error', { error: 'Timeout waiting for response' });
+      }
+      clearInterval(pollInterval);
+    }, 120000);
+  }
   // Watches the chat area for new .chat-assistant elements. When one
   // appears, extracts the text from <p> elements and streams chunks
   // back to the background script. When the assistant message stops
@@ -779,10 +936,11 @@
     return div.innerHTML;
   }
 
-  // Auto-refresh on load.
+  // Auto-refresh on load + start polling.
   setTimeout(function() {
     window.lzRefreshChatList();
     window.lzReadCurrentChat();
+    window.lzStartPolling();
   }, 2000);
 })();
 

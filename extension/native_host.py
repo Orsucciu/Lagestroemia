@@ -85,6 +85,13 @@ def _sender_thread():
 _response_queues: dict[str, queue.Queue] = {}
 _response_queues_lock = threading.Lock()
 
+# Pending requests for the extension to pick up via HTTP polling.
+# When an HTTP chat request comes in, it's put here. The extension
+# polls GET /_pending to get it, processes it, and POSTs responses
+# to /_response.
+_pending_requests: list[dict] = []
+_pending_lock = threading.Lock()
+
 
 def read_message_from_extension() -> Optional[dict]:
     """Read a JSON message from the browser extension via stdin."""
@@ -206,12 +213,18 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._handle_models()
         elif self.path == '/health':
             self._send_json(200, {'ok': True, 'extension_connected': _extension_connected.is_set()})
+        elif self.path == '/_pending':
+            self._handle_pending()
+        elif self.path == '/_debug':
+            self._handle_debug()
         else:
             self._send_json(404, {'error': {'message': 'Not found'}})
 
     def do_POST(self):
         if self.path == '/v1/chat/completions':
             self._handle_chat()
+        elif self.path == '/_response':
+            self._handle_response()
         else:
             self._send_json(404, {'error': {'message': 'Not found'}})
 
@@ -297,12 +310,13 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         import uuid
         request_id = str(uuid.uuid4())
 
-        # Send the request to the extension via the outgoing queue.
+        # Create a response queue for this request.
         q = queue.Queue()
         with _response_queues_lock:
             _response_queues[request_id] = q
 
-        msg = {
+        # Put the request in the pending list for the extension to poll.
+        pending_req = {
             'type': 'sendChat',
             'requestId': request_id,
             'messages': messages,
@@ -310,12 +324,12 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             'stream': stream,
             'options': {},
         }
-        _outgoing_queue.put(msg)
+        with _pending_lock:
+            _pending_requests.append(pending_req)
 
-        # Wait for the first response with a short timeout to check
-        # if the extension received the message.
+        # Wait for the first response (chunk, complete, or error).
         try:
-            first_msg = q.get(timeout=5)
+            first_msg = q.get(timeout=30)
             msg_type = first_msg.get('type', '')
             if msg_type == 'error':
                 err = first_msg.get('error', 'Unknown error')
@@ -326,13 +340,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             # Got a response — put it back and continue with streaming.
             q.put(first_msg)
         except queue.Empty:
-            # No response in 5 seconds — the extension didn't receive
-            # the message or is not processing it.
             with _response_queues_lock:
                 _response_queues.pop(request_id, None)
             self._send_json(504, {
                 'error': {
-                    'message': 'Extension did not respond in 5 seconds. '
+                    'message': 'Extension did not respond in 30 seconds. '
                                'Make sure a chat.z.ai tab is open and the '
                                'captcha has been solved.',
                     'type': 'timeout',
@@ -447,7 +459,6 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             with _response_queues_lock:
                 _response_queues.pop(request_id, None)
 
-        # Build an OpenAI-compatible response.
         response = {
             'id': request_id,
             'object': 'chat.completion',
@@ -467,6 +478,53 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             },
         }
         self._send_json(200, response)
+
+    def _handle_pending(self):
+        """GET /_pending — returns the next pending request for the
+        extension to process. The extension polls this endpoint."""
+        with _pending_lock:
+            if _pending_requests:
+                req = _pending_requests.pop(0)
+                self._send_json(200, req)
+            else:
+                self._send_json(200, {'type': 'none'})
+
+    def _handle_response(self):
+        """POST /_response — receives a response chunk from the extension.
+        Body: {"requestId": "XXX", "type": "streamChunk|streamEnd|error",
+               "chunk": {"content": "...", "reasoning": "..."},
+               "error": "message"}"""
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        try:
+            msg = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_json(400, {'error': 'Invalid JSON'})
+            return
+
+        request_id = msg.get('requestId', '')
+        msg_type = msg.get('type', '')
+
+        with _response_queues_lock:
+            q = _response_queues.get(request_id)
+        if q:
+            q.put(msg)
+            self._send_json(200, {'ok': True})
+        else:
+            self._send_json(404, {'error': 'Unknown requestId'})
+
+    def _handle_debug(self):
+        """GET /_debug — returns internal state for debugging."""
+        with _pending_lock:
+            pending_count = len(_pending_requests)
+        with _response_queues_lock:
+            queue_ids = list(_response_queues.keys())
+        self._send_json(200, {
+            'extension_connected': _extension_connected.is_set(),
+            'pending_requests': pending_count,
+            'active_queues': queue_ids,
+            'pending_details': list(_pending_requests) if pending_count > 0 else [],
+        })
 
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -512,12 +570,14 @@ def main():
     send_message_to_extension({'type': 'nativeReady', 'port': PORT})
 
     # Also start a polling endpoint so the extension can poll for
-    # pending requests (as a fallback if native messaging stdout
-    # doesn't work on Windows).
-    # The extension polls GET /_poll?requestId=XXX to get the
-    # sendChat request, and POST /_response to send back chunks.
-    _pending_requests = {}
-    _pending_lock = threading.Lock()
+    # pending requests (bypasses native messaging stdout which is
+    # broken on Windows for multi-threaded writes).
+    # Flow:
+    #   1. HTTP POST /v1/chat/completions → puts request in _pending_requests
+    #   2. Extension polls GET /_pending → gets the request
+    #   3. Extension types into chat.z.ai, watches DOM
+    #   4. Extension POST /_response → sends chunks back
+    #   5. HTTP handler reads chunks from the response queue → streams SSE
 
     try:
         server.serve_forever()
