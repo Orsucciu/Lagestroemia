@@ -49,22 +49,41 @@ from typing import Optional
 
 _stdout_lock = threading.Lock()
 _extension_connected = threading.Event()
-_response_queues: dict[str, queue.Queue] = {}
-_response_queues_lock = threading.Lock()
+
+# Queue for messages to send to the extension. A dedicated sender thread
+# reads from this queue and writes to stdout. This is critical on Windows
+# where writing to stdout from multiple threads (HTTP handler threads)
+# can fail silently — the native messaging pipe requires all writes to
+# come from a single thread.
+_outgoing_queue = queue.Queue()
 
 
 def send_message_to_extension(msg: dict) -> None:
-    """Send a JSON message to the browser extension via stdout."""
-    try:
-        data = json.dumps(msg).encode('utf-8')
-        with _stdout_lock:
-            # Native Messaging protocol: 4-byte little-endian length + payload
-            sys.stdout.buffer.write(struct.pack('<I', len(data)))
-            sys.stdout.buffer.write(data)
-            sys.stdout.buffer.flush()
-        print(f"[native] Sent to extension: {msg.get('type', '?')} ({len(data)} bytes)", file=sys.stderr)
-    except Exception as e:
-        print(f"[native] Failed to send to extension: {e}", file=sys.stderr)
+    """Put a message in the outgoing queue. The sender thread will
+    write it to stdout."""
+    _outgoing_queue.put(msg)
+
+
+def _sender_thread():
+    """Dedicated thread that reads from the outgoing queue and writes
+    to stdout. This ensures all stdout writes come from a single thread,
+    which is required for native messaging on Windows."""
+    while True:
+        try:
+            msg = _outgoing_queue.get()
+            if msg is None:
+                # Sentinel — exit.
+                break
+            data = json.dumps(msg).encode('utf-8')
+            with _stdout_lock:
+                sys.stdout.buffer.write(struct.pack('<I', len(data)))
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            print(f"[native] Sent to extension: {msg.get('type', '?')} ({len(data)} bytes)", file=sys.stderr)
+        except Exception as e:
+            print(f"[native] Failed to send to extension: {e}", file=sys.stderr)
+_response_queues: dict[str, queue.Queue] = {}
+_response_queues_lock = threading.Lock()
 
 
 def read_message_from_extension() -> Optional[dict]:
@@ -443,6 +462,10 @@ def main():
     print(f"[native]   GET  /v1/models", file=sys.stderr)
     print(f"[native]   POST /v1/chat/completions", file=sys.stderr)
     print(f"[native]   GET  /health", file=sys.stderr)
+
+    # Start the sender thread (writes to stdout from a single thread).
+    sender = threading.Thread(target=_sender_thread, daemon=True)
+    sender.start()
 
     # Start the stdin reader thread (reads messages from the extension).
     stdin_thread = threading.Thread(target=stdin_reader_thread, daemon=True)
