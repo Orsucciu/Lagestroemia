@@ -286,7 +286,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         try:
             req = json.loads(body)
         except json.JSONDecodeError:
-            self._send_json(400, {'error': {'message': 'Invalid JSON'}})
+            self._send_json(400, {'error': {'message': 'Invalid JSON: ' + body.decode('utf-8', errors='replace')[:200]}})
             return
 
         messages = req.get('messages', [])
@@ -297,13 +297,48 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         import uuid
         request_id = str(uuid.uuid4())
 
-        print(f"[native] Chat request received: model={model}, stream={stream}, "
-              f"messages={len(messages)}, requestId={request_id}", file=sys.stderr)
+        # Send the request to the extension via the outgoing queue.
+        q = queue.Queue()
+        with _response_queues_lock:
+            _response_queues[request_id] = q
 
-        # Send the request to the extension.
-        q = send_request_to_extension(request_id, messages, model, stream)
+        msg = {
+            'type': 'sendChat',
+            'requestId': request_id,
+            'messages': messages,
+            'model': model,
+            'stream': stream,
+            'options': {},
+        }
+        _outgoing_queue.put(msg)
 
-        print(f"[native] Waiting for response on queue {request_id}...", file=sys.stderr)
+        # Wait for the first response with a short timeout to check
+        # if the extension received the message.
+        try:
+            first_msg = q.get(timeout=5)
+            msg_type = first_msg.get('type', '')
+            if msg_type == 'error':
+                err = first_msg.get('error', 'Unknown error')
+                self._send_json(502, {'error': {'message': err}})
+                with _response_queues_lock:
+                    _response_queues.pop(request_id, None)
+                return
+            # Got a response — put it back and continue with streaming.
+            q.put(first_msg)
+        except queue.Empty:
+            # No response in 5 seconds — the extension didn't receive
+            # the message or is not processing it.
+            with _response_queues_lock:
+                _response_queues.pop(request_id, None)
+            self._send_json(504, {
+                'error': {
+                    'message': 'Extension did not respond in 5 seconds. '
+                               'Make sure a chat.z.ai tab is open and the '
+                               'captcha has been solved.',
+                    'type': 'timeout',
+                }
+            })
+            return
 
         if stream:
             self._handle_streaming_response(q, request_id, model)
@@ -475,6 +510,14 @@ def main():
     # stdout, the extension IS connected (the browser launched us).
     _extension_connected.set()
     send_message_to_extension({'type': 'nativeReady', 'port': PORT})
+
+    # Also start a polling endpoint so the extension can poll for
+    # pending requests (as a fallback if native messaging stdout
+    # doesn't work on Windows).
+    # The extension polls GET /_poll?requestId=XXX to get the
+    # sendChat request, and POST /_response to send back chunks.
+    _pending_requests = {}
+    _pending_lock = threading.Lock()
 
     try:
         server.serve_forever()
