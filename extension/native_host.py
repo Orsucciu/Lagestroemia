@@ -38,10 +38,17 @@ import threading
 import time
 import http.server
 import socketserver
+import socket
 import queue
 import os
 import sqlite3
 from typing import Optional
+
+# ---- Config (set in main()) ----
+# These are module-level so the HTTP handler can read them without having
+# to pass them through every request.
+_API_KEY: Optional[str] = None
+_IS_LOOPBACK: bool = True
 
 # ---- Native Messaging I/O ----
 # The browser communicates with this script via stdin (4-byte length
@@ -210,7 +217,31 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         https://chat.z.ai) can fetch from http://127.0.0.1:8081."""
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers',
+                         'Content-Type, Authorization')
+
+    def _check_auth(self) -> bool:
+        """Return True if the request is authorised to proceed.
+
+        If no API key is configured, all requests are allowed (loopback
+        only by default). If a key IS configured, the caller must send
+        `Authorization: Bearer <key>`. On failure, sends a 401 response
+        and returns False.
+        """
+        if not _API_KEY:
+            return True
+        auth = self.headers.get('Authorization', '')
+        if auth == f'Bearer {_API_KEY}':
+            return True
+        self._send_json(401, {
+            'error': {
+                'message': 'Invalid or missing API key. Send '
+                           'Authorization: Bearer <key>.',
+                'type': 'invalid_request_error',
+                'code': 'invalid_api_key',
+            }
+        })
+        return False
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
@@ -223,10 +254,14 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         print(f"[http] {self.address_string()} - {format % args}", file=sys.stderr)
 
     def do_GET(self):
+        # /health is always reachable so callers can probe without auth.
+        if self.path == '/health':
+            self._send_json(200, {'ok': True, 'extension_connected': _extension_connected.is_set()})
+            return
+        if not self._check_auth():
+            return
         if self.path == '/v1/models':
             self._handle_models()
-        elif self.path == '/health':
-            self._send_json(200, {'ok': True, 'extension_connected': _extension_connected.is_set()})
         elif self.path == '/_pending':
             self._handle_pending()
         elif self.path == '/_debug':
@@ -240,6 +275,8 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(404, {'error': {'message': 'Not found'}})
 
     def do_POST(self):
+        if not self._check_auth():
+            return
         if self.path == '/v1/chat/completions':
             self._handle_chat()
         elif self.path == '/_response':
@@ -250,6 +287,8 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(404, {'error': {'message': 'Not found'}})
 
     def do_DELETE(self):
+        if not self._check_auth():
+            return
         if self.path.startswith('/v1/chats/'):
             chat_id = self.path.split('/v1/chats/')[1]
             self._handle_delete_chat(chat_id)
@@ -654,21 +693,82 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 # ---- Main ----
 
+def _is_loopback_host(host: str) -> bool:
+    """True if host is a loopback address (127.0.0.0/8, ::1, localhost)."""
+    h = host.strip().lower()
+    if h in ('localhost', '::1'):
+        return True
+    if h.startswith('127.'):
+        return True
+    return False
+
+
+def _enumerate_lan_urls(host: str, port: int) -> list:
+    """Return every URL the server is reachable at.
+
+    For 0.0.0.0 / ::, enumerates every IPv4 address on every active
+    interface. For a specific host, returns a single-element list.
+    """
+    if host in ('0.0.0.0', '::'):
+        urls = []
+        try:
+            for info in socket.getaddrinfo(None, port, socket.AF_INET,
+                                           socket.SOCK_STREAM, 0,
+                                           socket.AI_PASSIVE):
+                addr = info[4][0]
+                urls.append(f'http://{addr}:{port}')
+            # Deduplicate while preserving order.
+            seen = set()
+            unique = []
+            for u in urls:
+                if u not in seen:
+                    seen.add(u)
+                    unique.append(u)
+            return unique or [f'http://0.0.0.0:{port}']
+        except Exception:
+            return [f'http://0.0.0.0:{port}']
+    return [f'http://{host}:{port}']
+
+
 def main():
     # Port can be configured via:
     #   1. Command-line arg: python native_host.py --port 9090
     #   2. Environment variable: LAGESTROEMIA_PORT=9090
     #   3. Default: 8081
+    #
+    # Host can be configured the same way:
+    #   --host 0.0.0.0 / LAGESTROEMIA_HOST=0.0.0.0
+    #
+    # API key (REQUIRED for non-loopback binds):
+    #   --api-key secret / LAGESTROEMIA_API_KEY=secret
     import argparse
     parser = argparse.ArgumentParser(description='Lagestroemia native host')
     parser.add_argument('--port', type=int, default=None,
                         help='Port to listen on (default: 8081)')
     parser.add_argument('--host', type=str, default='127.0.0.1',
-                        help='Host to bind to (default: 127.0.0.1)')
+                        help='Host to bind to (default: 127.0.0.1). '
+                             'Use 0.0.0.0 for LAN-reachable; requires --api-key.')
+    parser.add_argument('--api-key', type=str, default=None,
+                        help='Server API key. Callers must send '
+                             'Authorization: Bearer <key>. REQUIRED when '
+                             'binding to a non-loopback address.')
     args, _ = parser.parse_known_args()
+
+    global _API_KEY, _IS_LOOPBACK
 
     PORT = args.port or int(os.environ.get('LAGESTROEMIA_PORT', '8081'))
     HOST = args.host or os.environ.get('LAGESTROEMIA_HOST', '127.0.0.1')
+    _API_KEY = args.api_key or os.environ.get('LAGESTROEMIA_API_KEY', None)
+    _IS_LOOPBACK = _is_loopback_host(HOST)
+
+    # Security guard: refuse to bind an unauthenticated server to a
+    # publicly-reachable interface. Anyone on the LAN could otherwise
+    # drive your chat.z.ai session through this host.
+    if not _IS_LOOPBACK and not _API_KEY:
+        print(f"[native] FATAL: refusing to bind to '{HOST}' without an API key.", file=sys.stderr)
+        print(f"[native]        Set --api-key or LAGESTROEMIA_API_KEY, or use", file=sys.stderr)
+        print(f"[native]        --host 127.0.0.1 for loopback-only access.", file=sys.stderr)
+        sys.exit(2)
 
     # Start the HTTP server FIRST (before the stdin reader). This
     # ensures the server is immediately available even if the stdin
@@ -681,6 +781,14 @@ def main():
         sys.exit(1)
 
     print(f"[native] HTTP server listening on http://{HOST}:{PORT}", file=sys.stderr)
+    print(f"[native] Bind mode: {'loopback (this machine only)' if _IS_LOOPBACK else 'LAN-reachable (auth REQUIRED)'}", file=sys.stderr)
+    if _API_KEY:
+        print(f"[native] API key: set (callers must send Authorization: Bearer <key>)", file=sys.stderr)
+    else:
+        print(f"[native] API key: none (no auth required)", file=sys.stderr)
+    print(f"[native] Reachable URLs:", file=sys.stderr)
+    for url in _enumerate_lan_urls(HOST, PORT):
+        print(f"[native]   {url}", file=sys.stderr)
     print(f"[native] OpenAI-compatible API:", file=sys.stderr)
     print(f"[native]   GET  /v1/models", file=sys.stderr)
     print(f"[native]   POST /v1/chat/completions", file=sys.stderr)

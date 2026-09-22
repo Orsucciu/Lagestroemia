@@ -4,8 +4,9 @@
 // OpenAI-speaking clients (curl, Cline, Continue, LibreChat, the OpenAI
 // Python/Node SDKs, etc.) can hit to use z.ai through Lagestroemia.
 //
-// The server listens on `127.0.0.1` (loopback only — never 0.0.0.0) on
-// the port the user picks in Settings. Endpoints:
+// The server listens on the bind address the user picks in Settings —
+// `127.0.0.1` (loopback, default), `0.0.0.0` (all IPv4 interfaces, LAN-
+// reachable), or a specific IP like `192.168.1.50`. Endpoints:
 //
 //   GET  /v1/models
 //        → forwards to z.ai's model list. Returns the OpenAI shape:
@@ -23,13 +24,14 @@
 //        → returns {"ok":true,"version":"<appVersion>"} so callers can
 //          probe the server without sending a chat request.
 //
-//   GET  /            → returns a small HTML page describing the server.
+//   GET  /            → returns a small HTML page describing the server,
+//        including every reachable URL when bound to `0.0.0.0`.
 //
-// Auth: the server is loopback-only (no remote access). It still
-// expects callers to pass an `Authorization: Bearer` header that
-// matches the API key configured in Settings (the user's z.ai API key
-// OR a separate "server API key" that the user sets). If the user
-// leaves the server API key empty, no auth is required (loopback only).
+// Auth: callers must pass an `Authorization: Bearer` header matching the
+// server API key configured in Settings. If the key is empty, no auth is
+// required. Non-loopback binds REQUIRE a non-empty server API key — the
+// [OpenAiApiServer.start] method refuses to bind otherwise, to prevent
+// unauthenticated access from the network.
 //
 // This file uses `dart:io` directly so it only runs on native targets
 // (Linux, Windows, Android). On Web we cannot open a TCP listener —
@@ -45,7 +47,8 @@ import 'dart:io'
         HttpRequest,
         HttpResponse,
         HttpServer,
-        InternetAddress;
+        InternetAddress,
+        NetworkInterface;
 
 import 'package:dio/dio.dart';
 import 'package:logging/logging.dart';
@@ -56,6 +59,7 @@ import '../../core/config/app_config.dart';
 class OpenAiServerConfig {
   const OpenAiServerConfig({
     this.enabled = false,
+    this.host = '127.0.0.1',
     this.port = 8081,
     this.serverApiKey = '',
     this.allowCors = true,
@@ -64,28 +68,43 @@ class OpenAiServerConfig {
   /// Whether the server is running. Persists across app restarts.
   final bool enabled;
 
+  /// Bind address. Default: `127.0.0.1` (loopback — only reachable from
+  /// the same machine). Set to `0.0.0.0` to listen on all IPv4 interfaces
+  /// (reachable from the LAN), or a specific IP like `192.168.1.50` to
+  /// bind to one interface. Non-loopback hosts REQUIRE a non-empty
+  /// [serverApiKey] — the [start] method refuses to bind otherwise.
+  final String host;
+
   /// TCP port to listen on. Default: 8081 (out of the way of common
   /// dev servers like 8080, 3000, 5000).
   final int port;
 
   /// Optional server-side API key. If non-empty, the caller must pass
   /// `Authorization: Bearer <serverApiKey>` to access any endpoint. If
-  /// empty, no auth is required (loopback-only).
+  /// empty, no auth is required (loopback-only). REQUIRED when [host]
+  /// is anything other than `127.0.0.1` / `::1` / `localhost`.
   final String serverApiKey;
 
   /// If true, sends `Access-Control-Allow-Origin: *` on responses so
-  /// browser-based clients can call the server. Default: true (since
-  /// the server is loopback-only, CORS is safe).
+  /// browser-based clients can call the server. Default: true. Safe to
+  /// leave on even for non-loopback binds, but you should pair it with
+  /// a non-empty [serverApiKey] in that case.
   final bool allowCors;
+
+  /// True if [host] is a loopback address (only reachable from this
+  /// machine). Used to gate the auth-required rule.
+  bool get isLoopback => _isLoopbackHost(host);
 
   OpenAiServerConfig copyWith({
     bool? enabled,
+    String? host,
     int? port,
     String? serverApiKey,
     bool? allowCors,
   }) {
     return OpenAiServerConfig(
       enabled: enabled ?? this.enabled,
+      host: host ?? this.host,
       port: port ?? this.port,
       serverApiKey: serverApiKey ?? this.serverApiKey,
       allowCors: allowCors ?? this.allowCors,
@@ -93,19 +112,57 @@ class OpenAiServerConfig {
   }
 }
 
+/// True if [host] refers to a loopback address. Recognises the literal
+/// strings `127.0.0.1`, `::1`, `localhost` (case-insensitive) and any
+/// IPv4 address in the `127.0.0.0/8` block.
+bool _isLoopbackHost(String host) {
+  final trimmed = host.trim().toLowerCase();
+  if (trimmed == 'localhost' || trimmed == '::1') return true;
+  final dot = trimmed.indexOf('.');
+  if (dot <= 0) return false;
+  final firstOctet = int.tryParse(trimmed.substring(0, dot));
+  return firstOctet == 127;
+}
+
 /// The running state of the server, exposed to the UI.
 class OpenAiServerStatus {
   const OpenAiServerStatus({
     this.running = false,
+    this.host,
     this.port,
     this.url,
+    this.reachableUrls = const <String>[],
     this.error,
   });
 
   final bool running;
+
+  /// The bind address the server is listening on (e.g. `127.0.0.1`,
+  /// `0.0.0.0`, `192.168.1.50`). Null when the server is not running.
+  final String? host;
+
   final int? port;
+
+  /// Primary URL (`http://<host>:<port>`). For `0.0.0.0` this is
+  /// `http://0.0.0.0:<port>` — callers should use [reachableUrls]
+  /// instead to get the per-interface URLs.
   final String? url;
+
+  /// Every URL the server is reachable at. For a `0.0.0.0` bind this
+  /// contains one URL per active IPv4 interface (loopback + LAN IPs).
+  /// For a specific host bind, this is a single-element list. Empty
+  /// when the server is not running.
+  final List<String> reachableUrls;
+
   final String? error;
+
+  /// True if the bind address is anything other than loopback —
+  /// i.e. the server is reachable from other machines.
+  bool get isRemoteAccessible {
+    final h = host;
+    if (h == null) return false;
+    return !_isLoopbackHost(h);
+  }
 }
 
 /// The OpenAI-compatible server.
@@ -142,37 +199,83 @@ class OpenAiApiServer {
       return const OpenAiServerStatus();
     }
     final port = server.port;
+    final host = _config.host;
     return OpenAiServerStatus(
       running: true,
+      host: host,
       port: port,
-      url: 'http://127.0.0.1:$port',
+      url: 'http://$host:$port',
+      reachableUrls: _enumerateReachableUrls(host, port),
     );
   }
 
   /// Starts the server. Returns the running status on success, an
   /// error message on failure.
+  ///
+  /// Security guard: if [OpenAiServerConfig.host] is anything other than
+  /// a loopback address, [OpenAiServerConfig.serverApiKey] MUST be
+  /// non-empty. We refuse to bind an unauthenticated server to a
+  /// publicly-reachable interface — that would let anyone on the LAN
+  /// burn through your z.ai quota.
   Future<OpenAiServerStatus> start(OpenAiServerConfig config) async {
     if (_server != null) {
       await stop();
     }
     _config = config;
+    if (!config.isLoopback && config.serverApiKey.isEmpty) {
+      final msg = 'Refusing to bind to "${config.host}" without a server '
+          'API key. Set one in Settings, or use 127.0.0.1 for '
+          'loopback-only access.';
+      _log.warning(msg);
+      return OpenAiServerStatus(error: msg);
+    }
     try {
-      final server = await HttpServer.bind(
-        InternetAddress.loopbackIPv4,
-        config.port,
-      );
+      final address = InternetAddress(config.host);
+      final server = await HttpServer.bind(address, config.port);
       _server = server;
-      _log.info('OpenAI-compat server listening on 127.0.0.1:${server.port}');
+      _log.info('OpenAI-compat server listening on ${config.host}:${server.port}');
       _subscription = server.listen(_handleRequest);
       return OpenAiServerStatus(
         running: true,
         port: server.port,
-        url: 'http://127.0.0.1:${server.port}',
+        host: config.host,
+        url: 'http://${config.host}:${server.port}',
+        reachableUrls: _enumerateReachableUrls(config.host, server.port),
       );
     } catch (e) {
       _log.warning('Failed to start OpenAI-compat server: $e');
       return OpenAiServerStatus(error: e.toString());
     }
+  }
+
+  /// Returns the list of URLs the running server is reachable at, given
+  /// the bind [host] and [port].
+  ///
+  /// - For loopback hosts: returns `['http://127.0.0.1:<port>']`.
+  /// - For `0.0.0.0`: enumerates every IPv4 address on every active
+  ///   network interface and returns one URL per address.
+  /// - For a specific IP: returns `['http://<host>:<port>']`.
+  static List<String> _enumerateReachableUrls(String host, int port) {
+    if (host == '0.0.0.0' || host == '::') {
+      try {
+        final interfaces = NetworkInterface.list(
+          type: InternetAddressType.IPv4,
+          includeLoopback: true,
+          includeLinkLocal: false,
+        );
+        final urls = <String>[];
+        for (final iface in interfaces) {
+          for (final addr in iface.addresses) {
+            urls.add('http://${addr.address}:$port');
+          }
+        }
+        if (urls.isEmpty) return <String>['http://0.0.0.0:$port'];
+        return urls;
+      } catch (e) {
+        return <String>['http://0.0.0.0:$port'];
+      }
+    }
+    return <String>['http://$host:$port'];
   }
 
   /// Stops the server. Safe to call when not running.
@@ -273,34 +376,44 @@ class OpenAiApiServer {
   void _handleIndex(HttpRequest request) {
     request.response.headers.contentType = ContentType.html;
     final port = _server?.port ?? _config.port;
+    final host = _config.host;
+    final reachable = _enumerateReachableUrls(host, port);
+    final authBit = _config.serverApiKey.isNotEmpty
+        ? '-H "Authorization: Bearer &lt;your-server-api-key&gt" \\\n  '
+        : '';
+    final reachabilityHtml = reachable.length <= 1
+        ? '<p>Listening on <code>${reachable.first}</code>. '
+            '${_config.isLoopback ? "Loopback only — other machines on the network cannot reach it." : "Remote-accessible from other machines on the network."}</p>'
+        : '<p>Bound to <code>$host:$port</code>. Reachable at:</p>'
+            '<ul>${reachable.map((u) => '<li><code>$u</code></li>').join('')}</ul>'
+            '<p><em>${_config.isLoopback ? "Loopback only." : "Remote-accessible — other machines on the network can use any URL above."}</em></p>';
     request.response.write('''
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>Lagestroemia OpenAI-compat server</title>
-<style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#222}code{background:#f4f4f4;padding:2px 6px;border-radius:3px}a{color:#7C4DFF}</style>
+<style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#222}code{background:#f4f4f4;padding:2px 6px;border-radius:3px}a{color:#7C4DFF}em{color:#666}</style>
 </head>
 <body>
 <h1>Lagestroemia OpenAI-compat server</h1>
-<p>Listening on <code>http://127.0.0.1:$port</code>. Loopback only — other
-machines on the network cannot reach it.</p>
+$reachabilityHtml
 <h2>Endpoints</h2>
 <ul>
-  <li><code>GET /v1/health</code> — returns <code>{"ok":true,"version":"..."}</code></li>
-  <li><code>GET /v1/models</code> — list of available z.ai models</li>
-  <li><code>POST /v1/chat/completions</code> — OpenAI-shaped chat
+  <li><code>GET /v1/health</code> &mdash; returns <code>{"ok":true,"version":"..."}</code></li>
+  <li><code>GET /v1/models</code> &mdash; list of available z.ai models</li>
+  <li><code>POST /v1/chat/completions</code> &mdash; OpenAI-shaped chat
       completions (stream and non-stream)</li>
 </ul>
 <h2>Quick test</h2>
-<pre>curl http://127.0.0.1:$port/v1/chat/completions \\
+<pre>curl ${reachable.first}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
-  ${_config.serverApiKey.isNotEmpty ? '-H "Authorization: Bearer &lt;your-server-api-key&gt" \\\n  ' : ''}-d '{
+  $authBit-d '{
     "model": "glm-4.7",
     "messages": [{"role":"user","content":"Say hello in 5 words"}],
     "stream": false
   }'</pre>
 <p>For streaming, set <code>"stream": true</code>. The server forwards the
 SSE response byte-for-byte from z.ai.</p>
-<p><a href="https://docs.z.ai">z.ai docs</a> · <a href="https://github.com/Orsucciu/Lagestroemia">Source</a></p>
+<p><a href="https://docs.z.ai">z.ai docs</a> &middot; <a href="https://github.com/Orsucciu/Lagestroemia">Source</a></p>
 </body>
 </html>
 ''');

@@ -34,6 +34,7 @@ void _debugLog(String msg) {
 
 /// Keys for persistence in SharedPreferences.
 const String _kPrefEnabled = '${AppConfig.prefsPrefix}oai_server_enabled';
+const String _kPrefHost = '${AppConfig.prefsPrefix}oai_server_host';
 const String _kPrefPort = '${AppConfig.prefsPrefix}oai_server_port';
 const String _kPrefServerApiKey =
     '${AppConfig.prefsPrefix}oai_server_api_key';
@@ -67,6 +68,7 @@ class OpenAiServerNotifier extends StateNotifier<OpenAiServerStatus> {
   OpenAiServerConfig loadConfig() {
     return OpenAiServerConfig(
       enabled: _prefs.getBool(_kPrefEnabled) ?? false,
+      host: _prefs.getString(_kPrefHost) ?? '127.0.0.1',
       port: _prefs.getInt(_kPrefPort) ?? 8081,
       serverApiKey: _prefs.getString(_kPrefServerApiKey) ?? '',
       allowCors: _prefs.getBool(_kPrefAllowCors) ?? true,
@@ -103,6 +105,20 @@ class OpenAiServerNotifier extends StateNotifier<OpenAiServerStatus> {
   /// Updates the port and restarts if running. Persists.
   Future<void> setPort(int port) async {
     final cfg = loadConfig().copyWith(port: port);
+    await _persist(cfg);
+    if (state.running) {
+      await stop();
+      await start(config: cfg);
+    }
+  }
+
+  /// Updates the bind host and restarts if running. Persists.
+  /// Pass `127.0.0.1` for loopback-only, `0.0.0.0` for all IPv4
+  /// interfaces, or a specific IP like `192.168.1.50`. Non-loopback
+  /// hosts require a non-empty server API key — the [start] method
+  /// will refuse to bind otherwise.
+  Future<void> setHost(String host) async {
+    final cfg = loadConfig().copyWith(host: host.trim());
     await _persist(cfg);
     if (state.running) {
       await stop();
@@ -150,6 +166,7 @@ class OpenAiServerNotifier extends StateNotifier<OpenAiServerStatus> {
 
   Future<void> _persist(OpenAiServerConfig cfg) async {
     await _prefs.setBool(_kPrefEnabled, cfg.enabled);
+    await _prefs.setString(_kPrefHost, cfg.host);
     await _prefs.setInt(_kPrefPort, cfg.port);
     await _prefs.setString(_kPrefServerApiKey, cfg.serverApiKey);
     await _prefs.setBool(_kPrefAllowCors, cfg.allowCors);

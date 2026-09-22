@@ -2,16 +2,16 @@
 //
 // Lets the user:
 //   - Enable/disable the server
+//   - Pick the bind address (loopback / LAN / specific IP)
 //   - Pick the port
 //   - Set an optional server-side API key (callers must send
-//     Authorization: Bearer <this key>)
+//     Authorization: Bearer <this key>); REQUIRED for non-loopback binds
 //   - Toggle CORS
-//   - See the current URL
+//   - See the current URL(s)
 //   - Copy a curl example
 //
-// The server is loopback-only (127.0.0.1) so it can only be reached
-// from the same machine. On Web/iOS/macOS this section is hidden
-// because we cannot bind a TCP listener.
+// On Web/iOS/macOS this section is hidden because we cannot bind a
+// TCP listener.
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -32,12 +32,14 @@ class OpenAiServerSection extends ConsumerStatefulWidget {
 
 class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
   late OpenAiServerConfig _config;
+  late TextEditingController _hostCtrl;
   late TextEditingController _portCtrl;
   late TextEditingController _apiKeyCtrl;
   bool _initialised = false;
 
   @override
   void dispose() {
+    _hostCtrl.dispose();
     _portCtrl.dispose();
     _apiKeyCtrl.dispose();
     super.dispose();
@@ -47,6 +49,7 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
     if (_initialised) return;
     final notifier = ref.read(openAiServerProvider.notifier);
     _config = notifier.loadConfig();
+    _hostCtrl = TextEditingController(text: _config.host);
     _portCtrl = TextEditingController(text: _config.port.toString());
     _apiKeyCtrl = TextEditingController(text: _config.serverApiKey);
     _initialised = true;
@@ -82,7 +85,9 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
           title: const Text('Enable local API server'),
           subtitle: Text(
             status.running
-                ? 'Running at ${status.url}'
+                ? (status.reachableUrls.length > 1
+                    ? 'Running — reachable at ${status.reachableUrls.length} URLs (see below)'
+                    : 'Running at ${status.url}')
                 : 'Off — other OpenAI-speaking clients (curl, Cline, '
                     'Continue, etc.) cannot reach z.ai through '
                     'Lagestroemia.',
@@ -91,6 +96,7 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
             value: status.running,
             onChanged: (v) async {
               if (v) {
+                await notifier.setHost(_hostCtrl.text);
                 await notifier.setServerApiKey(_apiKeyCtrl.text);
                 await notifier.setPort(int.tryParse(_portCtrl.text) ?? 8081);
                 await notifier.start();
@@ -101,33 +107,65 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
           ),
         ),
         if (status.running && status.error == null) ...<Widget>[
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Row(
-              children: <Widget>[
-                Expanded(
-                  child: SelectableText(
-                    'URL: ${status.url}',
-                    style: scheme.textTheme.bodySmall,
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.copy, size: 18),
-                  tooltip: 'Copy URL',
-                  onPressed: () => Clipboard.setData(
-                    ClipboardData(text: status.url ?? ''),
-                  ),
-                ),
-              ],
+          if (status.reachableUrls.length > 1) ...<Widget>[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text(
+                'Reachable URLs (bound to ${status.host}):',
+                style: scheme.textTheme.bodySmall,
+              ),
             ),
-          ),
+            for (final url in status.reachableUrls)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: SelectableText(
+                        url,
+                        style: scheme.textTheme.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.copy, size: 18),
+                      tooltip: 'Copy URL',
+                      onPressed: () => Clipboard.setData(
+                        ClipboardData(text: url),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ] else
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: SelectableText(
+                      'URL: ${status.url}',
+                      style: scheme.textTheme.bodySmall,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.copy, size: 18),
+                    tooltip: 'Copy URL',
+                    onPressed: () => Clipboard.setData(
+                      ClipboardData(text: status.url ?? ''),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Row(
               children: <Widget>[
                 Expanded(
                   child: SelectableText(
-                    'Test: curl ${status.url}/v1/chat/completions '
+                    'Test: curl ${status.reachableUrls.first}/v1/chat/completions '
                         '-H "Content-Type: application/json" '
                         '${_config.serverApiKey.isNotEmpty ? '-H "Authorization: Bearer <your-key>" ' : ''}'
                         '-d \'{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}],"stream":false}\'',
@@ -141,7 +179,7 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
                   tooltip: 'Copy curl example',
                   onPressed: () => Clipboard.setData(
                     ClipboardData(
-                      text: 'curl ${status.url}/v1/chat/completions '
+                      text: 'curl ${status.reachableUrls.first}/v1/chat/completions '
                           '-H "Content-Type: application/json" '
                           '${_config.serverApiKey.isNotEmpty ? '-H "Authorization: Bearer <your-key>" ' : ''}'
                           "-d '{\"model\":\"glm-4.7\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}'",
@@ -159,6 +197,70 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
               'Error: ${status.error}',
               style: scheme.textTheme.bodySmall
                   ?.copyWith(color: scheme.colorScheme.error),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: TextField(
+            controller: _hostCtrl,
+            decoration: InputDecoration(
+              labelText: 'Bind address',
+              hintText: '127.0.0.1',
+              border: const OutlineInputBorder(),
+              helperText: '127.0.0.1 = this machine only. '
+                  '0.0.0.0 = all IPv4 interfaces (LAN-reachable). '
+                  '192.168.x.x = one specific interface.',
+              suffixIcon: PopupMenuButton<String>(
+                icon: const Icon(Icons.arrow_drop_down),
+                tooltip: 'Common bind addresses',
+                onSelected: (value) async {
+                  _hostCtrl.text = value;
+                  await notifier.setHost(value);
+                  setState(() => _config = _config.copyWith(host: value));
+                },
+                itemBuilder: (_) => const <PopupMenuEntry<String>>[
+                  PopupMenuItem<String>(
+                    value: '127.0.0.1',
+                    child: Text('127.0.0.1 (loopback only)'),
+                  ),
+                  PopupMenuItem<String>(
+                    value: '0.0.0.0',
+                    child: Text('0.0.0.0 (all IPv4, LAN-reachable)'),
+                  ),
+                ],
+              ),
+            ),
+            onChanged: (value) async {
+              await notifier.setHost(value);
+              setState(() => _config = _config.copyWith(host: value.trim()));
+            },
+          ),
+        ),
+        if (!_config.isLoopback && _apiKeyCtrl.text.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: scheme.colorScheme.errorContainer,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: <Widget>[
+                  Icon(Icons.warning_amber_rounded,
+                      color: scheme.colorScheme.onErrorContainer),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Non-loopback bind requires a server API key. '
+                      'The server will refuse to start until you set one.',
+                      style: scheme.textTheme.bodySmall?.copyWith(
+                        color: scheme.colorScheme.onErrorContainer,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         Padding(
@@ -183,25 +285,39 @@ class _OpenAiServerSectionState extends ConsumerState<OpenAiServerSection> {
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
           child: TextField(
             controller: _apiKeyCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Server API key (optional)',
-              hintText: 'Leave empty for no auth (loopback-only)',
-              border: OutlineInputBorder(),
-              helperText: 'Callers must send Authorization: Bearer <this key>. '
-                  'Empty = no auth required.',
+            decoration: InputDecoration(
+              labelText: 'Server API key',
+              hintText: _config.isLoopback
+                  ? 'Optional (loopback-only)'
+                  : 'Required for non-loopback bind',
+              border: const OutlineInputBorder(),
+              helperText: _config.isLoopback
+                  ? 'Callers must send Authorization: Bearer <this key>. '
+                      'Empty = no auth required.'
+                  : 'REQUIRED. Anyone on the network can call this server '
+                      'without it.',
+              errorText: (!_config.isLoopback && _apiKeyCtrl.text.isEmpty)
+                  ? 'Required for ${_config.host}'
+                  : null,
             ),
             onChanged: (value) async {
               await notifier.setServerApiKey(value);
+              setState(() {});
             },
           ),
         ),
         SwitchListTile(
           secondary: const Icon(Icons.public),
           title: const Text('Allow CORS'),
-          subtitle: const Text(
-              'Sends Access-Control-Allow-Origin: * so browser-based '
-              'clients can call the server. Safe because the server is '
-              'loopback-only.'),
+          subtitle: Text(
+            _config.isLoopback
+                ? 'Sends Access-Control-Allow-Origin: * so browser-based '
+                    'clients can call the server. Safe because the server '
+                    'is loopback-only.'
+                : 'Sends Access-Control-Allow-Origin: * so browser-based '
+                    'clients can call the server. Recommended when binding '
+                    'to non-loopback addresses — make sure a server API key '
+                    'is set.'),
           value: _config.allowCors,
           onChanged: (v) async {
             await notifier.setAllowCors(v);
