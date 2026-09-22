@@ -310,27 +310,29 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                          'Content-Type, Authorization')
 
     def _check_auth(self) -> bool:
-        """Return True if the request is authorised to proceed.
+        """Auth check. Currently a no-op — accepts all requests regardless
+        of whether an API key is configured or what value the caller sends.
 
-        If no API key is configured, all requests are allowed (loopback
-        only by default). If a key IS configured, the caller must send
-        `Authorization: Bearer <key>`. On failure, sends a 401 response
-        and returns False.
+        The auth machinery is kept in the code so it can be re-enabled
+        with a single line change if needed. To re-enable strict auth,
+        uncomment the block below.
         """
-        if not _API_KEY:
-            return True
-        auth = self.headers.get('Authorization', '')
-        if auth == f'Bearer {_API_KEY}':
-            return True
-        self._send_json(401, {
-            'error': {
-                'message': 'Invalid or missing API key. Send '
-                           'Authorization: Bearer <key>.',
-                'type': 'invalid_request_error',
-                'code': 'invalid_api_key',
-            }
-        })
-        return False
+        # --- strict auth (disabled) ---
+        # if not _API_KEY:
+        #     return True
+        # auth = self.headers.get('Authorization', '')
+        # if auth == f'Bearer {_API_KEY}':
+        #     return True
+        # self._send_json(401, {
+        #     'error': {
+        #         'message': 'Invalid or missing API key. Send '
+        #                    'Authorization: Bearer <key>.',
+        #         'type': 'invalid_request_error',
+        #         'code': 'invalid_api_key',
+        #     }
+        # })
+        # return False
+        return True
 
     def _is_loopback_client(self) -> bool:
         """True if the request originates from this machine.
@@ -1173,14 +1175,23 @@ def main():
     _API_KEY = args.api_key or os.environ.get('LAGESTROEMIA_API_KEY', None)
     _IS_LOOPBACK = _is_loopback_host(HOST)
 
-    # Security guard: refuse to bind an unauthenticated server to a
-    # publicly-reachable interface. Anyone on the LAN could otherwise
-    # drive your chat.z.ai session through this host.
-    if not _IS_LOOPBACK and not _API_KEY:
-        print(f"[native] FATAL: refusing to bind to '{HOST}' without an API key.", file=sys.stderr)
-        print(f"[native]        Set --api-key or LAGESTROEMIA_API_KEY, or use", file=sys.stderr)
-        print(f"[native]        --host 127.0.0.1 for loopback-only access.", file=sys.stderr)
-        sys.exit(2)
+    # Security note: we used to refuse non-loopback binds without an
+    # API key. That's been disabled — auth is currently a no-op (see
+    # _check_auth), and the user explicitly opted in to no-auth mode.
+    # The guard below is kept as a comment so it can be re-enabled
+    # trivially if the auth model changes back.
+    #
+    # if not _IS_LOOPBACK and not _API_KEY:
+    #     print(f"[native] FATAL: refusing to bind to '{HOST}' without an API key.", file=sys.stderr)
+    #     print(f"[native]        Set --api-key or LAGESTROEMIA_API_KEY, or use", file=sys.stderr)
+    #     print(f"[native]        --host 127.0.0.1 for loopback-only access.", file=sys.stderr)
+    #     sys.exit(2)
+    if not _IS_LOOPBACK:
+        print(f"[native] WARNING: binding to '{HOST}' with auth DISABLED.", file=sys.stderr)
+        print(f"[native]          Anyone who can reach this port can use your", file=sys.stderr)
+        print(f"[native]          chat.z.ai session. For WSL2 same-machine use", file=sys.stderr)
+        print(f"[native]          this is fine. For real LAN exposure, edit", file=sys.stderr)
+        print(f"[native]          _check_auth() in native_host.py to re-enable.", file=sys.stderr)
 
     # Kill any stale instances before binding. When the user reloads
     # the browser extension, the browser spawns a new native_host.py

@@ -123,8 +123,15 @@ def _drive_response(port, request_id, chunks):
     _post_response(port, request_id, 'streamEnd', {})
 
 
-def test_auth_rejects_missing_key():
-    """Without the API key, /v1/chat/completions returns 401."""
+def test_auth_disabled_by_default():
+    """Auth is currently disabled — even with an API key configured,
+    requests without a key are accepted. This test documents the
+    current behavior so future changes are intentional.
+
+    To re-enable auth, edit _check_auth() in native_host.py and
+    uncomment the strict-auth block. Then update this test to expect
+    401 again.
+    """
     server, port = _start_server()
     try:
         native_host._API_KEY = 'test-secret-key'
@@ -132,8 +139,11 @@ def test_auth_rejects_missing_key():
             'model': 'glm-4.7',
             'messages': [{'role': 'user', 'content': 'hi'}],
         }, api_key=None)
-        assert status == 401, f'expected 401, got {status}: {body}'
-        assert 'invalid_api_key' in body
+        # Auth no longer blocks — request proceeds to the next check
+        # (extension connected), which fails with 503 because no
+        # extension is connected in the test environment.
+        assert status == 503, f'expected 503 (no extension), got {status}: {body}'
+        assert 'not connected' in body.lower()
     finally:
         server.shutdown()
 
@@ -428,7 +438,7 @@ def test_internal_endpoints_loopback_only():
 def main():
     """Run all tests (no pytest needed)."""
     tests = [
-        test_auth_rejects_missing_key,
+        test_auth_disabled_by_default,
         test_auth_accepts_correct_key,
         test_health_is_public,
         test_streaming_forwards_content_and_reasoning,

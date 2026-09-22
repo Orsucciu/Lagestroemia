@@ -50,7 +50,7 @@ foreach ($p in $procs) {
             } else {
                 "specific IP — reachable from that interface only"
             }
-            Write-Host "  Listening on: $addr:$p_num  ($reachability)" -ForegroundColor $(if ($addr -eq '127.0.0.1') { 'Yellow' } else { 'Green' })
+            Write-Host "  Listening on: ${addr}:${p_num}  ($reachability)" -ForegroundColor $(if ($addr -eq '127.0.0.1') { 'Yellow' } else { 'Green' })
         }
     } catch {
         Write-Host "  Could not query listening ports: $($_.Exception.Message)" -ForegroundColor DarkGray
