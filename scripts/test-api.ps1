@@ -1,15 +1,19 @@
 # Test the full chain with a 2-turn conversation.
 # Usage:
-#   .\scripts\test-api.ps1                          # tests 127.0.0.1
-#   .\scripts\test-api.ps1 -Host 172.21.2.177       # tests a specific host
-#   .\scripts\test-api.ps1 -ApiKey librevox-...     # pass the server API key
+#   .\scripts\test-api.ps1                              # tests 0.0.0.0:8081
+#   .\scripts\test-api.ps1 -ServerHost 172.21.2.177     # tests a specific host
+#   .\scripts\test-api.ps1 -ServerHost 127.0.0.1        # loopback
+#   .\scripts\test-api.ps1 -ApiKey librevox-...         # pass the server API key
+#
+# Note: $Host is a built-in PowerShell read-only variable, so we use
+# $ServerHost instead.
 #
 # If -ApiKey is not given, the script reads $env:LAGESTROEMIA_API_KEY.
-# If neither is set, requests are sent without auth (will 401 if the
-# server requires a key).
+# If neither is set, requests are sent without auth (fine since auth
+# is disabled by default in native_host.py — see commit 6b0df24).
 
 param(
-    [string]$Host = "127.0.0.1",
+    [string]$ServerHost = "0.0.0.0",
     [int]$Port = 8081,
     [string]$ApiKey = $env:LAGESTROEMIA_API_KEY,
     [switch]$SkipTurns
@@ -22,12 +26,13 @@ function Write-Ok($msg) { Write-Host "   OK $msg" -ForegroundColor Green }
 function Write-Err($msg) { Write-Host "   X  $msg" -ForegroundColor Red }
 function Write-Info($msg) { Write-Host "   i  $msg" -ForegroundColor Yellow }
 
-$BaseUrl = "http://${Host}:${Port}"
+$BaseUrl = "http://${ServerHost}:${Port}"
 Write-Host "Testing against $BaseUrl" -ForegroundColor Cyan
 if ($ApiKey) {
-    Write-Host "Using API key from -ApiKey or env var ($($ApiKey.Substring(0, [Math]::Min(8, $ApiKey.Length)))...)" -ForegroundColor DarkGray
+    $keyPreview = $ApiKey.Substring(0, [Math]::Min(8, $ApiKey.Length))
+    Write-Host "Using API key from -ApiKey or env var (${keyPreview}...)" -ForegroundColor DarkGray
 } else {
-    Write-Host "No API key set (server may 401 if auth is enabled)" -ForegroundColor DarkGray
+    Write-Host "No API key set — auth is disabled by default, so this is fine." -ForegroundColor DarkGray
 }
 
 function Get-AuthHeaders {
