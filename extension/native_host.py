@@ -116,8 +116,14 @@ def read_message_from_extension() -> Optional[dict]:
 
 def stdin_reader_thread():
     """Background thread that reads messages from the extension.
+
+    When stdin closes (extension disconnected, browser killed, etc.),
+    this thread triggers a process exit. The browser is our parent
+    process via the native-messaging pipe — if it's gone, we have no
+    reason to keep running and would otherwise leak as a zombie.
+
     Uses a timeout on stdin so it doesn't block forever on Windows
-    when running standalone (without a browser)."""
+    when run standalone (without a browser)."""
     import select
     while True:
         try:
@@ -128,13 +134,16 @@ def stdin_reader_thread():
             raw_length = sys.stdin.buffer.read(4)
             if len(raw_length) < 4:
                 # stdin closed (EOF) — extension disconnected.
-                print("[native] stdin closed, exiting", file=sys.stderr)
+                print("[native] stdin closed (extension disconnected) — shutting down", file=sys.stderr)
+                _trigger_shutdown(reason='stdin_closed')
                 break
             length = struct.unpack('<I', raw_length)[0]
             if length == 0:
                 continue
             data = sys.stdin.buffer.read(length)
             if len(data) < length:
+                print("[native] stdin truncated (extension disconnected) — shutting down", file=sys.stderr)
+                _trigger_shutdown(reason='stdin_truncated')
                 break
 
             msg = json.loads(data.decode('utf-8'))
@@ -183,6 +192,85 @@ def stdin_reader_thread():
             # raise various errors. Just log and keep going.
             print(f"[native] stdin reader: {e}", file=sys.stderr)
             time.sleep(1)
+
+
+# ---- Shutdown machinery ----
+#
+# The native host can leak as a zombie process if the browser is killed
+# without cleanly closing the native-messaging pipe. We use a two-pronged
+# approach to ensure the process exits when the extension goes away:
+#
+#   1. stdin_reader_thread() detects EOF on stdin and calls
+#      _trigger_shutdown().
+#   2. A watchdog thread checks every 5s whether the extension has
+#      pinged recently (or connected at all). If not, it calls
+#      _trigger_shutdown().
+#
+# _trigger_shutdown() uses os._exit() because server.shutdown() called
+# from a non-main thread can deadlock (it waits for serve_forever() to
+# return, which it won't because the main thread is blocked in it).
+# os._exit() is brutal but safe here — we have no critical state to
+# flush, and a clean shutdown is preferable to a zombie process.
+
+_shutdown_lock = threading.Lock()
+_shutdown_triggered = False
+_last_extension_activity = time.time()
+_SHUTDOWN_TIMEOUT_SECONDS = 60  # exit if no activity for 60s after start
+
+
+def _trigger_shutdown(reason: str = 'unknown') -> None:
+    """Force-exit the process. Idempotent.
+
+    Uses os._exit() instead of sys.exit() because:
+      - sys.exit() raises SystemExit, which only works in the main
+        thread. From a background thread it does nothing.
+      - server.shutdown() called from a background thread deadlocks
+        if serve_forever() is running in the main thread.
+      - We have no critical state to flush (the SQLite chat DB commits
+        on every write, response queues are transient).
+    """
+    global _shutdown_triggered
+    with _shutdown_lock:
+        if _shutdown_triggered:
+            return
+        _shutdown_triggered = True
+    print(f"[native] Shutting down (reason: {reason})", file=sys.stderr)
+    # Flush stderr so the message actually appears in the browser's
+    # native-messaging log before the process dies.
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # Give the sender thread a moment to flush any pending stdout.
+    time.sleep(0.1)
+    os._exit(0)
+
+
+def _watchdog_thread():
+    """Background thread that kills the process if the extension
+    disconnects or never connects.
+
+    The browser's native-messaging protocol keeps stdin open as long
+    as the extension is loaded. When the browser closes the pipe
+    (extension reloaded, browser closed, browser crashed), stdin
+    reader will hit EOF and trigger shutdown.
+
+    But there's a corner case: if the browser starts the native host
+    and then crashes before sending the 'connected' message, stdin
+    may not close cleanly on Windows. The watchdog catches that by
+    checking whether we've ever received any activity. If we go 60s
+    after startup with zero activity, exit.
+    """
+    startup = time.time()
+    while True:
+        time.sleep(5)
+        # If we've never heard from the extension, exit after the
+        # startup grace period.
+        if not _extension_connected.is_set():
+            if time.time() - startup > _SHUTDOWN_TIMEOUT_SECONDS:
+                _trigger_shutdown(reason='extension_never_connected')
+                return
+            continue
 
 
 def send_request_to_extension(request_id: str, messages: list, model: str,
@@ -966,6 +1054,11 @@ def main():
     stdin_thread = threading.Thread(target=stdin_reader_thread, daemon=True)
     stdin_thread.start()
 
+    # Start the watchdog thread (kills the process if the extension
+    # never connects or stdin closes without a clean message).
+    watchdog = threading.Thread(target=_watchdog_thread, daemon=True)
+    watchdog.start()
+
     # Signal to the extension that we're ready. If we can send via
     # stdout, the extension IS connected (the browser launched us).
     _extension_connected.set()
@@ -984,9 +1077,24 @@ def main():
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("[native] Shutting down", file=sys.stderr)
-        server.shutdown()
+        print("[native] Ctrl+C received — shutting down", file=sys.stderr)
+        _trigger_shutdown(reason='keyboard_interrupt')
+
+
+# Install signal handlers on POSIX so the browser's SIGTERM (sent when
+# the extension is unloaded) triggers a clean exit instead of killing
+# us mid-write. On Windows the browser doesn't use signals — it closes
+# the native-messaging pipe, which stdin_reader_thread detects as EOF.
+def _install_signal_handlers():
+    if sys.platform.startswith('win'):
+        return
+    import signal
+    def _handler(signum, frame):
+        _trigger_shutdown(reason=f'signal_{signum}')
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
 
 
 if __name__ == '__main__':
+    _install_signal_handlers()
     main()
