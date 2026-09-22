@@ -384,6 +384,88 @@
     return 'unknown';
   };
 
+  // ---- Close the model-selector dropdown ----
+  // chat.z.ai's modal is finicky — clicking the backdrop doesn't
+  // always dismiss it. We try several strategies in order until one
+  // works. Returns true if the dropdown appears to be closed.
+  function _closeModelDropdown() {
+    // Strategy 1: press Escape. Works for most modal implementations.
+    try {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
+        bubbles: true, cancelable: true,
+      }));
+      document.body.dispatchEvent(new KeyboardEvent('keyup', {
+        key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
+        bubbles: true, cancelable: true,
+      }));
+    } catch (e) { /* ignore */ }
+
+    // Check if Escape worked — give it a tick.
+    var modalAfterEscape = document.querySelector('.modal.fixed');
+    if (!modalAfterEscape) {
+      log('Closed dropdown via Escape');
+      return true;
+    }
+
+    // Strategy 2: click the currently-selected model again. Re-selecting
+    // the active model is a no-op but closes the dropdown.
+    try {
+      var selected = document.querySelector('button[aria-label="model-item"][data-selected="true"]');
+      if (selected) {
+        selected.click();
+        log('Closed dropdown by re-clicking selected model');
+        return true;
+      }
+    } catch (e) { /* ignore */ }
+
+    // Strategy 3: click the model selector button again to toggle closed.
+    try {
+      var selectorBtn = document.querySelector('[id^="model-selector-"][id$="-button"]');
+      if (selectorBtn) {
+        selectorBtn.click();
+        var modalAfterToggle = document.querySelector('.modal.fixed');
+        if (!modalAfterToggle) {
+          log('Closed dropdown by toggling selector button');
+          return true;
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    // Strategy 4: click on a far-away part of the page (outside the modal).
+    try {
+      var backdrop = document.querySelector('.modal.fixed');
+      if (backdrop) {
+        // Dispatch mousedown + click at coordinates (0, 0) of the
+        // backdrop, which is usually outside the modal content.
+        backdrop.dispatchEvent(new MouseEvent('mousedown', {
+          bubbles: true, cancelable: true, clientX: 0, clientY: 0,
+        }));
+        backdrop.dispatchEvent(new MouseEvent('click', {
+          bubbles: true, cancelable: true, clientX: 0, clientY: 0,
+        }));
+        var modalAfterClick = document.querySelector('.modal.fixed');
+        if (!modalAfterClick) {
+          log('Closed dropdown via backdrop click');
+          return true;
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    // Strategy 5: look for an explicit close button.
+    try {
+      var closeBtn = document.querySelector('.modal.fixed button[aria-label="close"], .modal.fixed [aria-label="Close"]');
+      if (closeBtn) {
+        closeBtn.click();
+        log('Closed dropdown via close button');
+        return true;
+      }
+    } catch (e) { /* ignore */ }
+
+    log('⚠ Could not close model dropdown — modal may be stuck open');
+    return false;
+  }
+
   window.lzGetAvailableModels = function getAvailableModels() {
     var models = [];
     var items = document.querySelectorAll('button[aria-label="model-item"]');
@@ -431,12 +513,8 @@
       log('❌ Model "' + modelId + '" not found in dropdown');
       log('Available: ' + Array.from(items).map(function(b) { return b.getAttribute('data-value'); }).join(', '));
 
-      // Close the dropdown by clicking outside.
-      var modal = document.querySelector('.modal.fixed');
-      if (modal) {
-        modal.click();
-        log('Closed dropdown (model not found)');
-      }
+      // Close the dropdown.
+      _closeModelDropdown();
     }, 500);
 
     return true;
@@ -1951,7 +2029,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'getModels') {
     // Read models from chat.z.ai's DOM by opening the model selector
     // dropdown, reading the items, then closing it.
+    //
+    // Caching: we cache the model list for 5 minutes so we don't open
+    // the dropdown on every /v1/models call (which happens often when
+    // opencode starts up). The cache is in sessionStorage so it
+    // survives reloads but not browser restarts.
     console.log('[content] getModels — reading from DOM...');
+
+    var cached = null;
+    try {
+      var raw = sessionStorage.getItem('lagestroemia_models_cache');
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.timestamp && Date.now() - parsed.timestamp < 5 * 60 * 1000) {
+          cached = parsed.models;
+          console.log('[content] Using cached model list (' + cached.length + ' models, age ' +
+                      Math.round((Date.now() - parsed.timestamp) / 1000) + 's)');
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    if (cached) {
+      sendResponse({ ok: true, models: cached });
+      return true;
+    }
 
     var selectorBtn = document.querySelector('[id^="model-selector-"][id$="-button"]');
     if (!selectorBtn) {
@@ -1972,9 +2073,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       console.log('[content] Found ' + models.length + ' models in DOM: ' + models.join(', '));
 
-      // Close the dropdown.
-      var modal = document.querySelector('.modal.fixed');
-      if (modal) modal.click();
+      // Close the dropdown. Try multiple strategies since chat.z.ai's
+      // modal doesn't dismiss on a simple backdrop click.
+      _closeModelDropdown();
+
+      // Cache for 5 minutes.
+      try {
+        sessionStorage.setItem('lagestroemia_models_cache', JSON.stringify({
+          timestamp: Date.now(),
+          models: models,
+        }));
+      } catch (e) { /* ignore */ }
 
       sendResponse({ ok: true, models: models });
     }, 500);
