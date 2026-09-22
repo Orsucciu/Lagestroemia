@@ -1,5 +1,19 @@
 # Test the full chain with a 2-turn conversation.
-# Usage: .\scripts\test-api.ps1
+# Usage:
+#   .\scripts\test-api.ps1                          # tests 127.0.0.1
+#   .\scripts\test-api.ps1 -Host 172.21.2.177       # tests a specific host
+#   .\scripts\test-api.ps1 -ApiKey librevox-...     # pass the server API key
+#
+# If -ApiKey is not given, the script reads $env:LAGESTROEMIA_API_KEY.
+# If neither is set, requests are sent without auth (will 401 if the
+# server requires a key).
+
+param(
+    [string]$Host = "127.0.0.1",
+    [int]$Port = 8081,
+    [string]$ApiKey = $env:LAGESTROEMIA_API_KEY,
+    [switch]$SkipTurns
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -8,15 +22,29 @@ function Write-Ok($msg) { Write-Host "   OK $msg" -ForegroundColor Green }
 function Write-Err($msg) { Write-Host "   X  $msg" -ForegroundColor Red }
 function Write-Info($msg) { Write-Host "   i  $msg" -ForegroundColor Yellow }
 
+$BaseUrl = "http://${Host}:${Port}"
+Write-Host "Testing against $BaseUrl" -ForegroundColor Cyan
+if ($ApiKey) {
+    Write-Host "Using API key from -ApiKey or env var ($($ApiKey.Substring(0, [Math]::Min(8, $ApiKey.Length)))...)" -ForegroundColor DarkGray
+} else {
+    Write-Host "No API key set (server may 401 if auth is enabled)" -ForegroundColor DarkGray
+}
+
+function Get-AuthHeaders {
+    if ($ApiKey) { return @{ "Authorization" = "Bearer $ApiKey" } }
+    return @{}
+}
+
 function Send-ChatMessage {
     param([string]$Message, [int]$TimeoutSec = 60)
-    $bodyJson = @{ model = "x-preview-l"; messages = @(@{ role = "user"; content = $Message }); stream = $true } | ConvertTo-Json -Depth 5 -Compress
+    $bodyJson = @{ model = "glm-4.7"; messages = @(@{ role = "user"; content = $Message }); stream = $true } | ConvertTo-Json -Depth 5 -Compress
     $tempFile = [System.IO.Path]::GetTempFileName()
     [System.IO.File]::WriteAllText($tempFile, $bodyJson, [System.Text.Encoding]::UTF8)
     try {
-        $request = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:8081/v1/chat/completions")
+        $request = [System.Net.HttpWebRequest]::Create("$BaseUrl/v1/chat/completions")
         $request.Method = "POST"
         $request.ContentType = "application/json"
+        if ($ApiKey) { $request.Headers["Authorization"] = "Bearer $ApiKey" }
         $request.Timeout = ($TimeoutSec * 1000)
         $bytes = [System.IO.File]::ReadAllBytes($tempFile)
         $request.ContentLength = $bytes.Length
@@ -60,15 +88,37 @@ function Send-ChatMessage {
 
 # 1. Health
 Write-Step "1" "Health check..."
-$health = Invoke-RestMethod -Uri "http://127.0.0.1:8081/health" -Method Get -TimeoutSec 5
-Write-Ok "ok: $($health.ok)"
-if (-not $health.extension_connected) { Write-Err "Not connected!"; exit 1 }
-Write-Ok "extension_connected: True"
+try {
+    $health = Invoke-RestMethod -Uri "$BaseUrl/health" -Method Get -TimeoutSec 5
+    Write-Ok "ok: $($health.ok)"
+    if (-not $health.extension_connected) { Write-Err "Extension not connected! Open chat.z.ai in the browser."; exit 1 }
+    Write-Ok "extension_connected: True"
+} catch {
+    Write-Err "Cannot reach $BaseUrl/health — is the native host running? ($($_.Exception.Message))"
+    exit 1
+}
 
 # 2. Models
 Write-Step "2" "Models..."
-$models = Invoke-RestMethod -Uri "http://127.0.0.1:8081/v1/models" -Method Get -TimeoutSec 15
-Write-Ok "$($models.data.Count) models"
+try {
+    $models = Invoke-RestMethod -Uri "$BaseUrl/v1/models" -Method Get -Headers (Get-AuthHeaders) -TimeoutSec 15
+    Write-Ok "$($models.data.Count) models"
+    if ($models.data.Count -gt 0) {
+        Write-Info "First model: $($models.data[0].id)"
+    }
+} catch {
+    if ($_.Exception.Response.StatusCode -eq 401) {
+        Write-Err "401 — API key required. Pass -ApiKey <key> or set `$env:LAGESTROEMIA_API_KEY."
+    } else {
+        Write-Err "Failed: $($_.Exception.Message)"
+    }
+    exit 1
+}
+
+if ($SkipTurns) {
+    Write-Host "`n-SkipTurns set — skipping conversation test." -ForegroundColor Cyan
+    exit 0
+}
 
 # 3. Turn 1
 Write-Step "3" "Turn 1: 'Say hello in French'"
