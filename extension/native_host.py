@@ -553,7 +553,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
 
         # Wait for the first response (chunk, complete, or error).
         try:
-            first_msg = q.get(timeout=30)
+            # 180s timeout — long enough for the user to alt-tab to
+            # Firefox and solve the captcha if one appears. The
+            # previous 30s was too short for headless / WSL use cases
+            # where the user isn't actively watching the chat.z.ai tab.
+            first_msg = q.get(timeout=180)
             msg_type = first_msg.get('type', '')
             if msg_type == 'error':
                 err = first_msg.get('error', 'Unknown error')
@@ -568,9 +572,18 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 _response_queues.pop(request_id, None)
             self._send_json(504, {
                 'error': {
-                    'message': 'Extension did not respond in 30 seconds. '
-                               'Make sure a chat.z.ai tab is open and the '
-                               'captcha has been solved.',
+                    'message': 'Extension did not respond in 180 seconds. '
+                               'Likely causes:\n'
+                               '  1. Captcha required — switch to Firefox and '
+                               'solve the Aliyun popup on chat.z.ai\n'
+                               '  2. chat.z.ai tab is closed or backgrounded — '
+                               'bring it to the foreground\n'
+                               '  3. Extension crashed — check the browser '
+                               'console (F12) on chat.z.ai for errors\n'
+                               '  4. Content script not loaded — reload the '
+                               'chat.z.ai tab\n'
+                               'Diagnostic: open Firefox → chat.z.ai tab → F12 '
+                               '→ Console. Look for [content] log lines.',
                     'type': 'timeout',
                 }
             })
