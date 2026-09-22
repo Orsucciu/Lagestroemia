@@ -374,6 +374,37 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         model = req.get('model', 'glm-4.7')
         stream = req.get('stream', False)
 
+        # Forward OpenAI-style parameters to the extension. The
+        # extension (content.js) passes these through to chat.z.ai's
+        # /api/v2/chat/completions endpoint. Without this, opencode /
+        # Cline / Continue can't use tools, temperature, etc.
+        #
+        # Note: `thinking` is our own flag (maps to features.enable_thinking).
+        # `reasoning_effort` is forwarded via options.thinking=true →
+        # 'max'. OpenAI's reasoning_effort field isn't standard yet,
+        # so we translate it to our flag.
+        options = {
+            'tools': req.get('tools'),
+            'tool_choice': req.get('tool_choice'),
+            'temperature': req.get('temperature'),
+            'max_tokens': req.get('max_tokens'),
+            'top_p': req.get('top_p'),
+            'presence_penalty': req.get('presence_penalty'),
+            'frequency_penalty': req.get('frequency_penalty'),
+            'stop': req.get('stop'),
+            'seed': req.get('seed'),
+            'features': req.get('features'),
+        }
+        # Translate OpenAI's reasoning_effort to our thinking flag.
+        # OpenAI uses 'minimal' | 'low' | 'medium' | 'high'.
+        reasoning_effort = req.get('reasoning_effort')
+        if reasoning_effort in ('medium', 'high'):
+            options['thinking'] = True
+        elif req.get('thinking') is True:
+            options['thinking'] = True
+        # Drop None values so we don't overwrite defaults in content.js.
+        options = {k: v for k, v in options.items() if v is not None}
+
         # Generate a unique request ID.
         import uuid
         request_id = str(uuid.uuid4())
@@ -390,7 +421,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             'messages': messages,
             'model': model,
             'stream': stream,
-            'options': {},
+            'options': options,
         }
         with _pending_lock:
             _pending_requests.append(pending_req)
@@ -450,23 +481,51 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                     chunk = msg.get('chunk', {})
                     content = chunk.get('content', '')
                     reasoning = chunk.get('reasoning', '')
+                    tool_calls = chunk.get('tool_calls')
+                    finish_reason = chunk.get('finish_reason')
 
                     # Build an OpenAI-compatible SSE chunk.
+                    #
+                    # We surface content, reasoning_content (OpenAI's
+                    # thinking-models field, used by o1-like APIs),
+                    # and tool_calls (function-calling). All three can
+                    # appear in the same chunk or in separate chunks.
+                    delta = {}
+                    if content:
+                        delta['content'] = content
+                    if reasoning:
+                        # OpenAI's thinking-models field.
+                        delta['reasoning_content'] = reasoning
+                    if tool_calls:
+                        delta['tool_calls'] = tool_calls
+
+                    # Don't emit an empty delta — OpenAI clients can
+                    # misinterpret an empty delta as end-of-stream.
+                    if not delta and not finish_reason:
+                        continue
+
+                    choice = {
+                        'index': 0,
+                        'delta': delta,
+                        'finish_reason': None,
+                    }
+                    if finish_reason:
+                        choice['finish_reason'] = finish_reason
+
                     sse_chunk = {
                         'id': request_id,
                         'object': 'chat.completion.chunk',
                         'model': model,
-                        'choices': [{
-                            'index': 0,
-                            'delta': {'content': content} if content else {},
-                            'finish_reason': None,
-                        }],
+                        'choices': [choice],
                     }
                     self.wfile.write(f'data: {json.dumps(sse_chunk)}\n\n'.encode())
                     self.wfile.flush()
 
                 elif msg_type == 'streamEnd' or msg_type == 'response':
                     # Stream complete — send the final chunk with finish_reason.
+                    # If the model called tools, finish_reason should already
+                    # be 'tool_calls' (sent in the last streamChunk). Otherwise
+                    # we emit 'stop'.
                     final_chunk = {
                         'id': request_id,
                         'object': 'chat.completion.chunk',
@@ -500,6 +559,13 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         """Collect all chunks and return a single JSON response."""
         full_content = ''
         reasoning = ''
+        # Accumulate tool_calls across chunks. The OpenAI streaming
+        # format splits a single tool call across multiple chunks:
+        # chunk 1 carries {index:0, id, type:'function', function:{name}},
+        # subsequent chunks carry {index:0, function:{arguments:'<delta>'}}.
+        # We merge by index.
+        tool_calls_by_index = {}
+        final_finish_reason = None
 
         try:
             while True:
@@ -515,6 +581,32 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                     chunk = msg.get('chunk', {})
                     full_content += chunk.get('content', '')
                     reasoning += chunk.get('reasoning', '')
+                    tcs = chunk.get('tool_calls')
+                    if isinstance(tcs, list):
+                        for tc in tcs:
+                            idx = tc.get('index', 0)
+                            if idx not in tool_calls_by_index:
+                                tool_calls_by_index[idx] = {
+                                    'index': idx,
+                                    'id': tc.get('id', ''),
+                                    'type': tc.get('type', 'function'),
+                                    'function': {
+                                        'name': '',
+                                        'arguments': '',
+                                    },
+                                }
+                            acc = tool_calls_by_index[idx]
+                            fn = tc.get('function', {})
+                            if fn.get('name'):
+                                acc['function']['name'] += fn['name']
+                            if fn.get('arguments'):
+                                acc['function']['arguments'] += fn['arguments']
+                            if tc.get('id'):
+                                acc['id'] = tc['id']
+                            if tc.get('type'):
+                                acc['type'] = tc['type']
+                    if chunk.get('finish_reason'):
+                        final_finish_reason = chunk['finish_reason']
 
                 elif msg_type == 'streamEnd' or msg_type == 'response':
                     break
@@ -527,17 +619,31 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             with _response_queues_lock:
                 _response_queues.pop(request_id, None)
 
+        # Build the assistant message. If we accumulated tool_calls,
+        # content should be null per the OpenAI spec (a tool-calling
+        # turn has no textual content).
+        message = {'role': 'assistant'}
+        if tool_calls_by_index:
+            message['content'] = None
+            message['tool_calls'] = [tool_calls_by_index[i]
+                                     for i in sorted(tool_calls_by_index)]
+        else:
+            message['content'] = full_content
+        # Surface reasoning if we got any. OpenAI puts this at the
+        # top level of the message, not inside a separate object.
+        if reasoning:
+            message['reasoning_content'] = reasoning
+
+        finish_reason = final_finish_reason or ('tool_calls' if tool_calls_by_index else 'stop')
+
         response = {
             'id': request_id,
             'object': 'chat.completion',
             'model': model,
             'choices': [{
                 'index': 0,
-                'message': {
-                    'role': 'assistant',
-                    'content': full_content,
-                },
-                'finish_reason': 'stop',
+                'message': message,
+                'finish_reason': finish_reason,
             }],
             'usage': {
                 'prompt_tokens': 0,

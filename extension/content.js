@@ -766,6 +766,16 @@
           log('Received pending request: ' + req.type + ' (id: ' + req.requestId + ')');
 
           if (req.type === 'sendChat') {
+            // Forward the full messages array, model, and all OpenAI
+            // parameters (tools, temperature, etc.) to sendChatWithRetry,
+            // which uses fetch() + parseSSE — the same-origin captcha-
+            // solved path. The DOM-scrape path (lzSendMessageHTTP) is
+            // kept as a fallback for when fetch() fails (e.g. chat.z.ai
+            // changes their SSE shape and we need time to update the
+            // parser).
+            //
+            // The last user message is also extracted as `text` so we
+            // can fall back to the DOM path if fetch() rejects outright.
             var userMessage = req.messages[req.messages.length - 1];
             var text = userMessage.content || '';
             if (typeof text !== 'string') {
@@ -776,7 +786,65 @@
                 }
               }
             }
-            window.lzSendMessageHTTP(text, req.requestId);
+
+            // Build options from the request. native_host.py forwards
+            // these from the OpenAI-shaped body so opencode / Cline /
+            // Continue etc. can use tools, temperature, etc.
+            var sendOpts = {
+              thinking: !!(req.options && req.options.thinking),
+              tools: req.options && req.options.tools,
+              tool_choice: req.options && req.options.tool_choice,
+              temperature: req.options && req.options.temperature,
+              max_tokens: req.options && req.options.max_tokens,
+              top_p: req.options && req.options.top_p,
+              presence_penalty: req.options && req.options.presence_penalty,
+              frequency_penalty: req.options && req.options.frequency_penalty,
+              stop: req.options && req.options.stop,
+              seed: req.options && req.options.seed,
+              features: req.options && req.options.features,
+            };
+
+            console.log('[content] sendChat via fetch path — requestId=' + req.requestId +
+                        ', model=' + req.model + ', messages=' + req.messages.length +
+                        ', tools=' + (sendOpts.tools ? sendOpts.tools.length : 0));
+
+            // Stream chunks back to native_host.py via POST /_response.
+            // Each chunk: {content, reasoning, tool_calls?, finish_reason?}.
+            sendChatWithRetry(
+              req.messages,
+              req.model,
+              sendOpts,
+              function onChunk(chunk) {
+                postResponse(req.requestId, 'streamChunk', { chunk: chunk });
+              },
+              function onStatus(status) {
+                // Optional: surface status updates. We don't currently
+                // forward these to the HTTP client (would need a
+                // different message type), but logging helps debugging.
+                console.log('[content] status:', status);
+              }
+            ).then(function () {
+              postResponse(req.requestId, 'streamEnd', {});
+            }).catch(function (err) {
+              console.error('[content] fetch-path failed:', err.message);
+              // If the error looks like a parser / network issue (not a
+              // captcha or auth issue), fall back to the DOM-scrape path
+              // so the user gets *some* response instead of an error.
+              var msg = (err && err.message) || '';
+              var fallbackWorthy = /parse|JSON|network|fetch|HTTP 5/i.test(msg);
+              if (fallbackWorthy) {
+                console.warn('[content] falling back to DOM-scrape path');
+                try {
+                  window.lzSendMessageHTTP(text, req.requestId);
+                } catch (fallbackErr) {
+                  postResponse(req.requestId, 'error', {
+                    error: 'Primary fetch path failed (' + msg + ') and DOM fallback threw: ' + fallbackErr.message
+                  });
+                }
+              } else {
+                postResponse(req.requestId, 'error', { error: msg });
+              }
+            });
           }
         })
         .catch(function(err) {
@@ -1422,6 +1490,28 @@ async function sendChatCompletion(messages, model, options = {}) {
   meta.params.set('signature_timestamp', meta.timestamp);
 
   // Build the request body (matching chat.z.ai's format).
+  //
+  // OpenAI passthrough: we forward tools / tool_choice / temperature /
+  // max_tokens / top_p / stream / thinking from the caller. chat.z.ai's
+  // backend speaks the OpenAI shape inside `features` and the top-level
+  // `tools` field — GLM-4.6 / 4.7 support function calling natively.
+  const features = {
+    image_generation: false,
+    web_search: false,
+    auto_web_search: false,
+    preview_mode: true,
+    flags: [],
+    vlm_tools_enable: false,
+    vlm_web_search_enable: false,
+    vlm_website_mode: false,
+    enable_thinking: options.thinking || false,
+    reasoning_effort: options.thinking ? 'max' : 'low',
+  };
+  // Caller can override features via options.features (e.g. web_search).
+  if (options.features && typeof options.features === 'object') {
+    Object.assign(features, options.features);
+  }
+
   const body = {
     stream: true,
     model: model || 'glm-4.7',
@@ -1429,18 +1519,7 @@ async function sendChatCompletion(messages, model, options = {}) {
     signature_prompt: promptText,
     params: {},
     extra: {},
-    features: {
-      image_generation: false,
-      web_search: false,
-      auto_web_search: false,
-      preview_mode: true,
-      flags: [],
-      vlm_tools_enable: false,
-      vlm_web_search_enable: false,
-      vlm_website_mode: false,
-      enable_thinking: options.thinking || false,
-      reasoning_effort: options.thinking ? 'max' : 'low',
-    },
+    features: features,
     variables: {
       '{{USER_NAME}}': 'Guest',
       '{{USER_LOCATION}}': 'Unknown',
@@ -1457,6 +1536,35 @@ async function sendChatCompletion(messages, model, options = {}) {
     current_user_message_parent_id: null,
     background_tasks: { title_generation: true, tags_generation: true },
   };
+
+  // Forward OpenAI-style parameters that chat.z.ai understands.
+  if (Array.isArray(options.tools) && options.tools.length > 0) {
+    body.tools = options.tools;
+  }
+  if (options.tool_choice !== undefined && options.tool_choice !== null) {
+    body.tool_choice = options.tool_choice;
+  }
+  if (typeof options.temperature === 'number') {
+    body.temperature = options.temperature;
+  }
+  if (typeof options.max_tokens === 'number') {
+    body.max_tokens = options.max_tokens;
+  }
+  if (typeof options.top_p === 'number') {
+    body.top_p = options.top_p;
+  }
+  if (typeof options.presence_penalty === 'number') {
+    body.presence_penalty = options.presence_penalty;
+  }
+  if (typeof options.frequency_penalty === 'number') {
+    body.frequency_penalty = options.frequency_penalty;
+  }
+  if (typeof options.stop === 'string' || Array.isArray(options.stop)) {
+    body.stop = options.stop;
+  }
+  if (typeof options.seed === 'number') {
+    body.seed = options.seed;
+  }
 
   // If we have a captcha param, include it.
   if (options.captchaVerifyParam) {
@@ -1721,10 +1829,28 @@ async function sendChatWithRetry(messages, model, options, onChunk, onStatus) {
         if (payload.choices && payload.choices.length > 0) {
           const delta = payload.choices[0].delta;
           if (delta) {
-            if (onChunk) onChunk({
+            const chunkOut = {
               content: delta.content || '',
               reasoning: delta.reasoning_content || '',
-            });
+            };
+            // Forward tool_calls (function-calling). chat.z.ai emits
+            // them as delta.tool_calls (OpenAI shape) — index, id,
+            // type='function', function={name, arguments}. We pass
+            // them through unchanged.
+            if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+              chunkOut.tool_calls = delta.tool_calls;
+            }
+            // Some backends use the singular form for the first chunk.
+            if (delta.tool_call && !chunkOut.tool_calls) {
+              chunkOut.tool_calls = [delta.tool_call];
+            }
+            // finish_reason is on payload.choices[0], not on delta.
+            // Surface it so the server can emit a proper final chunk
+            // (e.g. 'tool_calls' vs 'stop').
+            if (payload.choices[0].finish_reason) {
+              chunkOut.finish_reason = payload.choices[0].finish_reason;
+            }
+            if (onChunk) onChunk(chunkOut);
           }
         }
       }
