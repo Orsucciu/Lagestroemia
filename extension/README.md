@@ -4,6 +4,11 @@ A browser extension that provides a powerful chat client for chat.z.ai,
 running directly inside the chat.z.ai tab. This solves the captcha +
 CORS + origin-binding issues that the Flutter app faces.
 
+It also exposes a local OpenAI-compatible HTTP server so external tools
+(opencode, Cline, Continue, curl, the OpenAI SDKs, etc.) can use
+chat.z.ai through Lagestroemia — with **full support for tools
+(function calling), reasoning content, and multi-turn conversations**.
+
 ## How it works
 
 ```
@@ -16,6 +21,8 @@ CORS + origin-binding issues that the Flutter app faces.
 │  │  - No CORS issues (same-origin)      │  │
 │  │  - Captcha SDK works natively        │  │
 │  │  - Computes X-Signature              │  │
+│  │  - Forwards tools / temperature /    │  │
+│  │    reasoning_effort from the caller  │  │
 │  └──────────────┬────────────────────────┘  │
 │                 │ chrome.runtime             │
 │  ┌──────────────▼────────────────────────┐  │
@@ -23,14 +30,25 @@ CORS + origin-binding issues that the Flutter app faces.
 │  │  - Relays messages                   │  │
 │  │  - Manages guest token cache         │  │
 │  └──────────────┬────────────────────────┘  │
-│                 │ chrome.runtime             │
 │  ┌──────────────▼────────────────────────┐  │
 │  │  sidepanel.html/js (side panel UI)   │  │
 │  │  - Chat interface                    │  │
 │  │  - Model picker                      │  │
 │  │  - Streams responses in real time    │  │
-│  └───────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
+│  └──────────────┬────────────────────────┘  │
+└─────────────────┼───────────────────────────┘
+                  │ HTTP (loopback / LAN)
+┌─────────────────▼───────────────────────────┐
+│  native_host.py (Python, OpenAI-compat)    │
+│  - POST /v1/chat/completions               │
+│  - GET  /v1/models                         │
+│  - Forwards tools / temp / etc to ext      │
+│  - Translates SSE → OpenAI shape           │
+│  - Emits tool_calls + reasoning_content    │
+└─────────────────┬───────────────────────────┘
+                  │ HTTP
+                  ▼
+        opencode / Cline / curl / etc.
 ```
 
 ### Why this works (and the Flutter app doesn't)
@@ -41,16 +59,22 @@ CORS + origin-binding issues that the Flutter app faces.
 | **Captcha origin** | ❌ Aliyun rejects tokens from localhost | ✅ Token solved from chat.z.ai's origin |
 | **X-Signature** | ❌ Browser strips custom headers on cross-origin | ✅ Same-origin, no header restrictions |
 | **Cookies** | ❌ Can't access chat.z.ai cookies | ✅ `credentials: 'include'` works natively |
+| **Tools (function calling)** | ❌ Not implemented | ✅ Forwarded to chat.z.ai, results emitted in OpenAI shape |
+| **Reasoning content** | ❌ DOM scrape discards it | ✅ Surfaced as `delta.reasoning_content` |
+| **Multi-turn** | ❌ Only last message sent | ✅ Full `messages` array forwarded |
 
 ## Features
 
-- **Server API**: full chat.z.ai API client with signature computation
+- **OpenAI-compatible server**: full chat.z.ai API client with signature computation
+- **Function calling**: `tools` parameter forwarded, `tool_calls` emitted with backfilled IDs
+- **Reasoning**: `reasoning_content` forwarded; `reasoning_effort: 'medium'|'high'` enables thinking
+- **Streaming**: real-time SSE streaming with content + reasoning + tool_calls deltas
 - **Auto-retry**: exponential backoff on server errors (5xx, rate limit, network)
 - **Captcha solving**: uses chat.z.ai's own Aliyun captcha SDK (works natively)
 - **Model picker**: live model list from chat.z.ai
-- **Streaming**: real-time SSE streaming with content + reasoning
 - **Enter to send**: Shift+Enter for newline
 - **Clean UI**: side panel with chat bubbles
+- **LAN access**: bind to `0.0.0.0` with API key for opencode-on-another-machine workflows
 
 ## Installation
 
@@ -93,6 +117,98 @@ sidepanel.html/js, icons) and swaps the appropriate manifest:
 - `manifest.json` — Chrome/Edge (uses `side_panel` + `service_worker`)
 - `manifest.firefox.json` — Firefox (uses `sidebar_action` + `background.scripts`)
 
+## Using with opencode / Cline / Continue
+
+The native host exposes an OpenAI-compatible HTTP server. By default it
+listens on `http://127.0.0.1:8081` (loopback only).
+
+### Same-machine setup
+
+1. Install the native host: `scripts/install-native.sh firefox` (or `chrome`/`edge`)
+2. Reload the extension so the native host starts
+3. Point your OpenAI-compatible client at `http://127.0.0.1:8081/v1`
+
+For opencode (`~/.config/opencode/opencode.json`):
+```json
+{
+  "provider": {
+    "lagestroemia": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Lagestroemia (z.ai)",
+      "options": { "baseURL": "http://127.0.0.1:8081/v1" },
+      "models": {
+        "glm-4.7": { "name": "GLM-4.7" }
+      }
+    }
+  }
+}
+```
+
+### LAN setup (opencode on a different machine)
+
+1. Edit `extension/native_host_wrapper.sh` (regenerate it via `scripts/install-native.sh` if missing)
+2. Uncomment two lines:
+   ```bash
+   export LAGESTROEMIA_HOST=0.0.0.0
+   export LAGESTROEMIA_API_KEY=change-me-to-a-secret
+   ```
+3. Reload the extension. The native host logs every reachable URL to stderr.
+4. On the remote machine, point opencode at `http://<desktop-ip>:8081/v1`
+   with `apiKey: "change-me-to-a-secret"`.
+
+**Security model:**
+- Loopback binds (`127.0.0.1`) require no API key.
+- Non-loopback binds (`0.0.0.0` or a specific IP) **require** an API key.
+  The server refuses to start otherwise.
+- Internal endpoints (`/_pending`, `/_response`, `/_debug`) are
+  loopback-only — they can't be reached from the LAN even when the
+  server is bound to `0.0.0.0`. This prevents remote callers from
+  reading pending user messages or injecting fake responses.
+
+### Verifying it works
+
+```bash
+# Health (no auth needed):
+curl http://127.0.0.1:8081/health
+
+# Models (auth if API key set):
+curl http://127.0.0.1:8081/v1/models \
+  -H "Authorization: Bearer change-me-to-a-secret"
+
+# Chat (non-streaming):
+curl http://127.0.0.1:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer change-me-to-a-secret" \
+  -d '{
+    "model": "glm-4.7",
+    "messages": [{"role": "user", "content": "Say hi"}],
+    "stream": false
+  }'
+
+# Chat with tools:
+curl http://127.0.0.1:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4.7",
+    "messages": [{"role": "user", "content": "What is 2+2?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "calculator",
+        "description": "Perform arithmetic",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "expression": {"type": "string"}
+          },
+          "required": ["expression"]
+        }
+      }
+    }],
+    "stream": true
+  }'
+```
+
 ## Architecture
 
 ### `manifest.json`
@@ -107,10 +223,22 @@ Aliyun CDN (for the captcha SDK). Uses the `sidePanel` API (Chrome 114+).
 ### `content.js` (content script)
 Runs inside the chat.z.ai tab. This is the core of the extension:
 - Computes the X-Signature header (HMAC-SHA256 with the secret key)
-- Sends chat completion requests to `/api/v2/chat/completions`
-- Parses SSE streams and extracts content + reasoning deltas
+- Sends chat completion requests to `/api/v2/chat/completions` via `fetch()`
+- Forwards `tools`, `tool_choice`, `temperature`, `max_tokens`, `top_p`,
+  `presence_penalty`, `frequency_penalty`, `stop`, `seed` from the caller
+- Parses SSE streams and extracts content + reasoning + tool_calls deltas
 - Solves the Aliyun captcha using chat.z.ai's own SDK
 - Auto-retries on server errors with exponential backoff
+- Falls back to DOM-scrape path if the SSE parser fails
+
+### `native_host.py` (Python)
+The OpenAI-compatible HTTP server. Bridges external clients to the
+extension via HTTP polling (`/_pending` and `/_response`).
+- Translates OpenAI-shaped requests to the extension's internal format
+- Translates the extension's streamChunks back to OpenAI SSE chunks
+- Backfills `tool_call.id` if chat.z.ai omits it (required by opencode)
+- Accumulates tool_call argument fragments across chunks (non-streaming)
+- Enforces auth + loopback-only internal endpoints
 
 ### `sidepanel.html/js` (side panel UI)
 - Chat interface with message bubbles
@@ -123,8 +251,23 @@ Runs inside the chat.z.ai tab. This is the core of the extension:
 - `extension/manifest.json` — extension manifest (V3)
 - `extension/background.js` — service worker (token management + relay)
 - `extension/content.js` — content script (API client + captcha + retry)
+- `extension/native_host.py` — OpenAI-compat HTTP server (Python)
 - `extension/sidepanel.html` — side panel UI
 - `extension/sidepanel.js` — side panel logic
+- `extension/tests/test-tools.py` — unit tests for tool_calls + reasoning
+
+## Tests
+
+```sh
+# Signature tests (offline):
+node extension/tests/test-signature.js
+
+# OpenAI-compat translation tests (offline, no chat.z.ai needed):
+python3 extension/tests/test-tools.py
+
+# Live API test (needs network + captcha solved):
+node extension/tests/test-live-api.js
+```
 
 ## Comparison with the Flutter app
 

@@ -243,6 +243,29 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         })
         return False
 
+    def _is_loopback_client(self) -> bool:
+        """True if the request originates from this machine.
+
+        Used to gate internal endpoints (/_pending, /_response, /_debug)
+        that the browser extension polls. The extension runs inside a
+        chat.z.ai tab in the user's browser, so its requests come from
+        127.0.0.1 / ::1. When the server is bound to 0.0.0.0 for LAN
+        access, external callers must not be able to reach these
+        endpoints — they could otherwise read pending user messages
+        via GET /_pending or inject fake responses via POST /_response.
+        """
+        client_ip = self.client_address[0]
+        return client_ip in ('127.0.0.1', '::1', 'localhost')
+
+    def _require_loopback(self) -> bool:
+        """Return True if the client is on loopback, else send 404 and
+        return False. We return 404 (not 403) so the endpoint's
+        existence isn't revealed to external callers."""
+        if self._is_loopback_client():
+            return True
+        self._send_json(404, {'error': {'message': 'Not found'}})
+        return False
+
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
         self.send_response(200)
@@ -258,14 +281,21 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/health':
             self._send_json(200, {'ok': True, 'extension_connected': _extension_connected.is_set()})
             return
+        # Internal endpoints: loopback only. These are polled by the
+        # browser extension and must not be reachable from the LAN even
+        # when the server is bound to 0.0.0.0.
+        if self.path in ('/_pending', '/_debug'):
+            if not self._require_loopback():
+                return
+            if self.path == '/_pending':
+                self._handle_pending()
+            elif self.path == '/_debug':
+                self._handle_debug()
+            return
         if not self._check_auth():
             return
         if self.path == '/v1/models':
             self._handle_models()
-        elif self.path == '/_pending':
-            self._handle_pending()
-        elif self.path == '/_debug':
-            self._handle_debug()
         elif self.path == '/v1/chats':
             self._handle_list_chats()
         elif self.path.startswith('/v1/chats/'):
@@ -275,12 +305,16 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(404, {'error': {'message': 'Not found'}})
 
     def do_POST(self):
+        # Internal endpoint: loopback only.
+        if self.path == '/_response':
+            if not self._require_loopback():
+                return
+            self._handle_response()
+            return
         if not self._check_auth():
             return
         if self.path == '/v1/chat/completions':
             self._handle_chat()
-        elif self.path == '/_response':
-            self._handle_response()
         elif self.path == '/v1/chats':
             self._handle_save_chat()
         else:
@@ -461,7 +495,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
-        self.send_header('Connection', 'keep-alive')
+        # 'close' so the client knows the body ends when we stop writing.
+        # With 'keep-alive' (the HTTP/1.1 default), clients that call
+        # .read() block forever waiting for EOF, because there's no
+        # Content-Length on a streamed response.
+        self.send_header('Connection', 'close')
         self.end_headers()
 
         try:
@@ -483,6 +521,26 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                     reasoning = chunk.get('reasoning', '')
                     tool_calls = chunk.get('tool_calls')
                     finish_reason = chunk.get('finish_reason')
+
+                    # Backfill tool_call IDs if chat.z.ai omitted them.
+                    # OpenAI clients (opencode, Cline, etc.) require an
+                    # `id` on each tool_call to match the result back
+                    # when sending the next request. Without an id the
+                    # client will fail or drop the tool call.
+                    if isinstance(tool_calls, list):
+                        for tc in tool_calls:
+                            if not tc.get('id'):
+                                tc['id'] = f'call_{request_id[:8]}_{tc.get("index", 0)}'
+                            if not tc.get('type'):
+                                tc['type'] = 'function'
+                            fn = tc.get('function')
+                            if not isinstance(fn, dict):
+                                tc['function'] = {'name': '', 'arguments': ''}
+                            else:
+                                if not fn.get('name'):
+                                    fn['name'] = ''
+                                if not fn.get('arguments'):
+                                    fn['arguments'] = ''
 
                     # Build an OpenAI-compatible SSE chunk.
                     #
@@ -588,7 +646,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                             if idx not in tool_calls_by_index:
                                 tool_calls_by_index[idx] = {
                                     'index': idx,
-                                    'id': tc.get('id', ''),
+                                    'id': tc.get('id') or f'call_{request_id[:8]}_{idx}',
                                     'type': tc.get('type', 'function'),
                                     'function': {
                                         'name': '',
