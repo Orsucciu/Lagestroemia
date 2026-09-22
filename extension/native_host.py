@@ -41,6 +41,7 @@ import socketserver
 import socket
 import queue
 import os
+import signal
 import sqlite3
 from typing import Optional
 
@@ -943,6 +944,147 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
+# ---- Stale-instance detection ----
+#
+# When the user reloads the browser extension, the browser spawns a NEW
+# native_host.py process without first killing the old one. The new
+# process tries to bind to port 8081, fails with "Address already in
+# use", and exits — leaving the old zombie running indefinitely.
+#
+# To fix this, every native_host.py startup:
+#   1. Enumerates all OTHER processes whose command line mentions
+#      native_host.py (i.e. other instances of itself).
+#   2. Kills them.
+#   3. Waits briefly for the port to release.
+#   4. Then binds.
+#
+# This is intentionally aggressive — we don't try to coordinate via
+# PID files or sockets. The assumption is that there should only ever
+# be one native_host.py running per machine. If the user has Firefox
+# AND Chrome both with the extension loaded, only the most-recently-
+# started one wins; the older one gets killed. That matches the user's
+# mental model: reloading the extension should give them a fresh server.
+
+import subprocess
+
+
+def _find_other_native_host_pids() -> list:
+    """Return PIDs of all other running native_host.py processes.
+
+    Uses PowerShell on Windows (wmic is deprecated on Win11) and
+    pgrep on POSIX. Returns the current process's PID is excluded.
+    """
+    own_pid = os.getpid()
+    pids = []
+
+    if sys.platform.startswith('win'):
+        # PowerShell: enumerate processes whose CommandLine mentions
+        # native_host.py, return their PIDs.
+        ps_cmd = (
+            "$ErrorActionPreference='SilentlyContinue'; "
+            "Get-CimInstance Win32_Process -Filter \"CommandLine LIKE '%native_host.py%'\" | "
+            f"Where-Object {{ $_.ProcessId -ne {own_pid} }} | "
+            "ForEach-Object { Write-Output $_.ProcessId }"
+        )
+        try:
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', ps_cmd],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in result.stdout.strip().split('\n'):
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+        except Exception as e:
+            print(f"[native] Could not enumerate processes via PowerShell: {e}",
+                  file=sys.stderr)
+    else:
+        # POSIX: pgrep -f matches against the full command line.
+        try:
+            result = subprocess.run(
+                ['pgrep', '-f', 'native_host.py'],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.strip().split('\n'):
+                line = line.strip()
+                if line.isdigit():
+                    pid = int(line)
+                    if pid != own_pid:
+                        pids.append(pid)
+        except FileNotFoundError:
+            # pgrep not installed — fall back to ps + grep.
+            try:
+                result = subprocess.run(
+                    ['ps', '-eo', 'pid=,command='],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.split('\n'):
+                    line = line.strip()
+                    if 'native_host.py' in line:
+                        parts = line.split(None, 1)
+                        if parts and parts[0].isdigit():
+                            pid = int(parts[0])
+                            if pid != own_pid:
+                                pids.append(pid)
+            except Exception as e:
+                print(f"[native] Could not enumerate processes via ps: {e}",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"[native] Could not enumerate processes via pgrep: {e}",
+                  file=sys.stderr)
+
+    return pids
+
+
+def _kill_pid(pid: int) -> bool:
+    """Kill a process by PID. Returns True on success."""
+    try:
+        if sys.platform.startswith('win'):
+            subprocess.run(
+                ['taskkill', '/PID', str(pid), '/F'],
+                timeout=5, check=False,
+                capture_output=True,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
+        return True
+    except Exception as e:
+        print(f"[native] Failed to kill PID {pid}: {e}", file=sys.stderr)
+        return False
+
+
+def _kill_existing_native_hosts(verbose: bool = True) -> int:
+    """Kill all other running native_host.py instances.
+
+    Called at startup before binding the port, so we don't fail with
+    'Address already in use' when the user reloads the extension.
+
+    Returns the number of processes killed.
+    """
+    pids = _find_other_native_host_pids()
+    if not pids:
+        if verbose:
+            print("[native] No stale instances found.", file=sys.stderr)
+        return 0
+
+    if verbose:
+        print(f"[native] Found {len(pids)} stale instance(s): PIDs {pids}",
+              file=sys.stderr)
+
+    killed = 0
+    for pid in pids:
+        if _kill_pid(pid):
+            killed += 1
+            if verbose:
+                print(f"[native] Killed stale instance PID {pid}", file=sys.stderr)
+
+    # Give the killed processes a moment to release the port.
+    if killed > 0:
+        time.sleep(0.5)
+
+    return killed
+
+
 # ---- Main ----
 
 def _is_loopback_host(host: str) -> bool:
@@ -1004,7 +1146,25 @@ def main():
                         help='Server API key. Callers must send '
                              'Authorization: Bearer <key>. REQUIRED when '
                              'binding to a non-loopback address.')
+    parser.add_argument('--kill-all', action='store_true',
+                        help='Kill all other running native_host.py instances '
+                             'and exit. Useful when the wrapper script '
+                             'leaves zombies behind.')
+    parser.add_argument('--no-kill-existing', action='store_true',
+                        help='Do NOT kill stale instances before binding. '
+                             'Default is to kill them, so reloading the '
+                             'extension gives you a fresh server.')
     args, _ = parser.parse_known_args()
+
+    # --kill-all: kill stale instances and exit. Useful as a CLI command
+    # without spawning a new server.
+    if args.kill_all:
+        killed = _kill_existing_native_hosts(verbose=True)
+        if killed > 0:
+            print(f"[native] Killed {killed} stale instance(s).", file=sys.stderr)
+        else:
+            print("[native] No stale instances found.", file=sys.stderr)
+        sys.exit(0)
 
     global _API_KEY, _IS_LOOPBACK
 
@@ -1021,6 +1181,17 @@ def main():
         print(f"[native]        Set --api-key or LAGESTROEMIA_API_KEY, or use", file=sys.stderr)
         print(f"[native]        --host 127.0.0.1 for loopback-only access.", file=sys.stderr)
         sys.exit(2)
+
+    # Kill any stale instances before binding. When the user reloads
+    # the browser extension, the browser spawns a new native_host.py
+    # without killing the old one — the old one keeps the port bound
+    # and the new one would fail with 'Address already in use'. Kill
+    # the old one first so the new one can take over.
+    if not args.no_kill_existing:
+        killed = _kill_existing_native_hosts(verbose=True)
+        if killed > 0:
+            print(f"[native] Killed {killed} stale instance(s) before binding.",
+                  file=sys.stderr)
 
     # Start the HTTP server FIRST (before the stdin reader). This
     # ensures the server is immediately available even if the stdin
