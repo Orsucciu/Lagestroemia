@@ -904,10 +904,16 @@
             ).then(function () {
               postResponse(req.requestId, 'streamEnd', {});
             }).catch(function (err) {
-              console.error('[content] fetch-path failed:', err.message);
-              // If the error looks like a parser / network issue (not a
-              // captcha or auth issue), fall back to the DOM-scrape path
-              // so the user gets *some* response instead of an error.
+              console.error('[content] fetch-path failed:', err.message, err.stack || '');
+              // Don't fall back to the DOM-scrape path — it has its own
+              // bugs (dropdown doesn't close, textbox selection is flaky
+              // on Svelte). Surface the real error to the caller instead
+              // so we can diagnose the actual fetch failure.
+              //
+              // If you DO want the fallback (e.g. chat.z.ai changes
+              // their SSE shape and fetch always fails), uncomment the
+              // block below.
+              /*
               var msg = (err && err.message) || '';
               var fallbackWorthy = /parse|JSON|network|fetch|HTTP 5/i.test(msg);
               if (fallbackWorthy) {
@@ -919,9 +925,12 @@
                     error: 'Primary fetch path failed (' + msg + ') and DOM fallback threw: ' + fallbackErr.message
                   });
                 }
-              } else {
-                postResponse(req.requestId, 'error', { error: msg });
+                return;
               }
+              */
+              postResponse(req.requestId, 'error', {
+                error: 'fetch-path failed: ' + ((err && err.message) || 'unknown error')
+              });
             });
           }
         })
@@ -2027,66 +2036,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'getModels') {
-    // Read models from chat.z.ai's DOM by opening the model selector
-    // dropdown, reading the items, then closing it.
+    // Return a static model list. We used to open chat.z.ai's model
+    // selector dropdown and read the items from the DOM, but that
+    // approach was fragile:
+    //   - The dropdown didn't close reliably (chat.z.ai's modal
+    //     doesn't dismiss on backdrop click, Escape, or any of the
+    //     5 strategies in _closeModelDropdown)
+    //   - The stuck dropdown blocked subsequent UI interactions
+    //     (clicking the textarea, sending messages)
     //
-    // Caching: we cache the model list for 5 minutes so we don't open
-    // the dropdown on every /v1/models call (which happens often when
-    // opencode starts up). The cache is in sessionStorage so it
-    // survives reloads but not browser restarts.
-    console.log('[content] getModels — reading from DOM...');
+    // The native_host.py server has a static fallback list of 8
+    // models. If we return an empty list here, it uses that fallback.
+    // The list doesn't change often — when it does, edit the static
+    // list in native_host.py (_handle_models function).
+    //
+    // To force a refresh, the user can clear sessionStorage and
+    // reload, but that's rarely needed.
+    console.log('[content] getModels — returning empty list (native_host uses static fallback)');
 
-    var cached = null;
+    // Still cache the empty result for 5 minutes so we don't log
+    // this line on every call.
     try {
-      var raw = sessionStorage.getItem('lagestroemia_models_cache');
-      if (raw) {
-        var parsed = JSON.parse(raw);
-        if (parsed && parsed.timestamp && Date.now() - parsed.timestamp < 5 * 60 * 1000) {
-          cached = parsed.models;
-          console.log('[content] Using cached model list (' + cached.length + ' models, age ' +
-                      Math.round((Date.now() - parsed.timestamp) / 1000) + 's)');
-        }
-      }
+      sessionStorage.setItem('lagestroemia_models_cache', JSON.stringify({
+        timestamp: Date.now(),
+        models: [],
+      }));
     } catch (e) { /* ignore */ }
 
-    if (cached) {
-      sendResponse({ ok: true, models: cached });
-      return true;
-    }
-
-    var selectorBtn = document.querySelector('[id^="model-selector-"][id$="-button"]');
-    if (!selectorBtn) {
-      console.log('[content] Model selector button not found');
-      sendResponse({ ok: true, models: [] });
-      return true;
-    }
-
-    // Click to open the dropdown.
-    selectorBtn.click();
-
-    setTimeout(function() {
-      var items = document.querySelectorAll('button[aria-label="model-item"]');
-      var models = [];
-      for (var i = 0; i < items.length; i++) {
-        var value = items[i].getAttribute('data-value') || '';
-        if (value) models.push(value);
-      }
-      console.log('[content] Found ' + models.length + ' models in DOM: ' + models.join(', '));
-
-      // Close the dropdown. Try multiple strategies since chat.z.ai's
-      // modal doesn't dismiss on a simple backdrop click.
-      _closeModelDropdown();
-
-      // Cache for 5 minutes.
-      try {
-        sessionStorage.setItem('lagestroemia_models_cache', JSON.stringify({
-          timestamp: Date.now(),
-          models: models,
-        }));
-      } catch (e) { /* ignore */ }
-
-      sendResponse({ ok: true, models: models });
-    }, 500);
+    sendResponse({ ok: true, models: [] });
     return true;
   }
 });
