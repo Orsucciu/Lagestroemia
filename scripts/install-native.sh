@@ -18,22 +18,19 @@ NATIVE_HOST_PATH="$EXT_DIR/native_host.py"
 WRAPPER_SCRIPT="$EXT_DIR/native_host_wrapper.sh"
 
 # Create a wrapper script.
-# The wrapper sets env vars that native_host.py reads on startup.
-# Uncomment + edit to enable LAN/remote access:
-#   LAGESTROEMIA_HOST=0.0.0.0   binds to all IPv4 interfaces
-#   LAGESTROEMIA_API_KEY=...    REQUIRED when host is non-loopback
+# The wrapper doesn't set LAGESTROEMIA_HOST — native_host.py defaults
+# to 0.0.0.0 (all IPv4 interfaces), which works for WSL2 + same-machine
+# use out of the box. Auth is disabled by default too.
+#
+# To restrict to loopback only, edit the wrapper to add:
+#   export LAGESTROEMIA_HOST=127.0.0.1
 cat > "$WRAPPER_SCRIPT" << EOF
 #!/usr/bin/env bash
 # Lagestroemia native host wrapper.
 #
-# To enable LAN/remote access (opencode on another machine, etc.):
-#   1. Uncomment the LAGESTROEMIA_HOST line below and set it to 0.0.0.0
-#      (or a specific IP like 192.168.1.50).
-#   2. Uncomment LAGESTROEMIA_API_KEY and set it to a secret string.
-#      The server REFUSES to bind non-loopback without a key.
-#   3. Reload the browser extension.
-# export LAGESTROEMIA_HOST=0.0.0.0
-# export LAGESTROEMIA_API_KEY=change-me
+# Defaults: binds to 0.0.0.0:8081, no auth. Works for WSL2 and
+# same-machine use. To restrict to loopback only, uncomment:
+# export LAGESTROEMIA_HOST=127.0.0.1
 exec python3 "$NATIVE_HOST_PATH"
 EOF
 chmod +x "$WRAPPER_SCRIPT"
@@ -108,13 +105,8 @@ echo "   Script:   $WRAPPER_SCRIPT"
 echo "   Extension ID: $EXTENSION_ID"
 echo ""
 echo "The local HTTP server will start automatically when the extension"
-echo "connects. By default it listens on http://127.0.0.1:8081 (loopback only)."
-echo ""
-echo "To enable LAN/remote access (opencode on another machine):"
-echo "  1. Edit: $WRAPPER_SCRIPT"
-echo "  2. Uncomment LAGESTROEMIA_HOST=0.0.0.0"
-echo "  3. Uncomment LAGESTROEMIA_API_KEY=<your-secret>"
-echo "  4. Reload the extension."
+echo "connects. It listens on http://0.0.0.0:8081 (all IPv4 interfaces)"
+echo "so both WSL2 and same-machine callers work out of the box."
 echo ""
 echo "After reloading the extension, check:"
 echo "  curl http://127.0.0.1:8081/health"

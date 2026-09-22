@@ -67,14 +67,12 @@ $boundToAll = $firstProcPorts | Where-Object { $_.LocalAddress -eq '0.0.0.0' -or
 
 if ($boundToLoopback -and -not $boundToAll) {
     Write-Host "Server is bound to LOOPBACK only." -ForegroundColor Yellow
-    Write-Host "To enable LAN/WSL access, edit the wrapper:" -ForegroundColor Yellow
+    Write-Host "This is unusual — the default is 0.0.0.0." -ForegroundColor Yellow
+    Write-Host "Check that LAGESTROEMIA_HOST isn't set to 127.0.0.1 in the wrapper:" -ForegroundColor Yellow
     Write-Host "  notepad C:\Users\Theo\Lagestroemia\extension\native_host_wrapper.bat" -ForegroundColor White
-    Write-Host "Uncomment and set:" -ForegroundColor Yellow
-    Write-Host '  set LAGESTROEMIA_HOST=0.0.0.0' -ForegroundColor White
-    Write-Host '  set LAGESTROEMIA_API_KEY=<your-secret>' -ForegroundColor White
-    Write-Host "Then reload the extension in Firefox." -ForegroundColor Yellow
+    Write-Host "Or just delete the wrapper and re-run install-native.ps1 to regenerate it." -ForegroundColor Yellow
 } elseif ($boundToAll) {
-    Write-Host "Server is bound to 0.0.0.0 — LAN/WSL access should work." -ForegroundColor Green
+    Write-Host "Server is bound to 0.0.0.0 — WSL2/LAN access should work." -ForegroundColor Green
     $lanIps = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
         $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown'
     } | Select-Object -ExpandProperty IPAddress

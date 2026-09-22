@@ -29,23 +29,20 @@ if (-not $PythonExe) {
 }
 
 # Create a wrapper batch script.
-# The wrapper sets env vars that native_host.py reads on startup.
-# Uncomment + edit to enable LAN/remote access:
-#   set LAGESTROEMIA_HOST=0.0.0.0   binds to all IPv4 interfaces
-#   set LAGESTROEMIA_API_KEY=...    REQUIRED when host is non-loopback
+# The wrapper doesn't set LAGESTROEMIA_HOST — native_host.py defaults
+# to 0.0.0.0 (all IPv4 interfaces), which works for WSL2 + same-machine
+# use out of the box. Auth is disabled by default too.
+#
+# To restrict to loopback only (e.g. you're on a shared machine), edit
+# the wrapper to add:  set LAGESTROEMIA_HOST=127.0.0.1
 $WrapperBat = Join-Path $ExtDir "native_host_wrapper.bat"
 @"
 @echo off
 REM Lagestroemia native host wrapper.
 REM
-REM To enable LAN/remote access (opencode on another machine, etc.):
-REM   1. Uncomment the LAGESTROEMIA_HOST line below and set it to 0.0.0.0
-REM      (or a specific IP like 192.168.1.50).
-REM   2. Uncomment LAGESTROEMIA_API_KEY and set it to a secret string.
-REM      The server REFUSES to bind non-loopback without a key.
-REM   3. Reload the browser extension.
-REM set LAGESTROEMIA_HOST=0.0.0.0
-REM set LAGESTROEMIA_API_KEY=change-me
+REM Defaults: binds to 0.0.0.0:8081, no auth. Works for WSL2 and
+REM same-machine use. To restrict to loopback only, uncomment:
+REM set LAGESTROEMIA_HOST=127.0.0.1
 "$PythonExe" "$NativeHostPath"
 "@ | Set-Content $WrapperBat -Encoding ASCII
 
@@ -126,15 +123,13 @@ Write-Host "   Registry: $RegKey"
 Write-Host "   Extension ID: $ExtensionId"
 Write-Host ""
 Write-Host "The local HTTP server will start automatically when the extension"
-Write-Host "connects. By default it listens on http://127.0.0.1:8081 (loopback only)."
-Write-Host ""
-Write-Host "To enable LAN/remote access (opencode on another machine):" -ForegroundColor Cyan
-Write-Host "  1. Edit: $WrapperBat"
-Write-Host "  2. Uncomment: set LAGESTROEMIA_HOST=0.0.0.0"
-Write-Host "  3. Uncomment: set LAGESTROEMIA_API_KEY=<your-secret>"
-Write-Host "  4. Reload the extension."
+Write-Host "connects. It listens on http://0.0.0.0:8081 (all IPv4 interfaces)"
+Write-Host "so both WSL2 and same-machine callers work out of the box."
 Write-Host ""
 Write-Host "After reloading the extension, check:" -ForegroundColor Cyan
 Write-Host "  curl http://127.0.0.1:8081/health"
+Write-Host ""
+Write-Host "From WSL2, use the Windows host IP:" -ForegroundColor Cyan
+Write-Host "  curl http://`$(ip route show default | awk '{print `$3}'):8081/health"
 Write-Host ""
 Write-Host "You should see a 🌺 badge on chat.z.ai saying 'Server on :8081'" -ForegroundColor Cyan

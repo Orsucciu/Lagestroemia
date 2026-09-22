@@ -1141,9 +1141,10 @@ def main():
     parser = argparse.ArgumentParser(description='Lagestroemia native host')
     parser.add_argument('--port', type=int, default=None,
                         help='Port to listen on (default: 8081)')
-    parser.add_argument('--host', type=str, default='127.0.0.1',
-                        help='Host to bind to (default: 127.0.0.1). '
-                             'Use 0.0.0.0 for LAN-reachable; requires --api-key.')
+    parser.add_argument('--host', type=str, default='0.0.0.0',
+                        help='Host to bind to (default: 0.0.0.0 — all IPv4 '
+                             'interfaces, works for WSL2 + same-machine. '
+                             'Use 127.0.0.1 for loopback only.')
     parser.add_argument('--api-key', type=str, default=None,
                         help='Server API key. Callers must send '
                              'Authorization: Bearer <key>. REQUIRED when '
@@ -1171,7 +1172,12 @@ def main():
     global _API_KEY, _IS_LOOPBACK
 
     PORT = args.port or int(os.environ.get('LAGESTROEMIA_PORT', '8081'))
-    HOST = args.host or os.environ.get('LAGESTROEMIA_HOST', '127.0.0.1')
+    # Default to 0.0.0.0 (all interfaces) so WSL2 and same-machine
+    # callers work out of the box. Auth is disabled (see _check_auth),
+    # so this is safe for typical single-user use. If you re-enable
+    # auth and want to restrict to loopback, set LAGESTROEMIA_HOST
+    # or pass --host 127.0.0.1.
+    HOST = args.host or os.environ.get('LAGESTROEMIA_HOST', '0.0.0.0')
     _API_KEY = args.api_key or os.environ.get('LAGESTROEMIA_API_KEY', None)
     _IS_LOOPBACK = _is_loopback_host(HOST)
 
