@@ -122,6 +122,9 @@ sidepanel.html/js, icons) and swaps the appropriate manifest:
 The native host exposes an OpenAI-compatible HTTP server. By default it
 listens on `http://127.0.0.1:8081` (loopback only).
 
+**Full setup guide (same-machine, WSL2, LAN, troubleshooting, reinstall):
+see [docs/opencode-setup.md](../docs/opencode-setup.md).**
+
 ### Same-machine setup
 
 1. Install the native host: `scripts/install-native.sh firefox` (or `chrome`/`edge`)
