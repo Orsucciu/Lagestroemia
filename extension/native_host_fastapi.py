@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
 """
-Lagestroemia Native Messaging Host — FastAPI version.
+Lagestroemia Native Messaging Host — FastAPI version using
+fastapi-openai-compat.
 
-This is a drop-in replacement for native_host.py that uses FastAPI +
-Pydantic + sse-starlette for the HTTP layer. The bridge code (native
-messaging I/O, response queues, polling) is the same as native_host.py.
-
-Why use this instead of native_host.py:
-  - Proper Pydantic request validation (catches malformed bodies
-    before they reach the bridge)
-  - sse-starlette handles SSE framing correctly (multi-line content,
-    Unicode, [DONE] terminator)
+This is a drop-in replacement for native_host.py that uses the
+`fastapi-openai-compat` library (https://github.com/deepset-ai/fastapi-openai-compat)
+for the OpenAI-compatible HTTP layer. The library handles:
+  - SSE streaming (proper framing, [DONE] terminator)
+  - Tool calls (streaming + non-streaming)
+  - Reasoning content (DeepSeek convention: delta.reasoning_content)
+  - Forward compatibility (dict-based types, accepts new OpenAI fields)
+  - OpenAI-spec-shaped error responses
   - Automatic OpenAPI docs at /docs
-  - Cleaner error responses (OpenAI-spec-shaped)
-  - Type hints throughout
 
-Why use native_host.py instead:
-  - Zero dependencies (stdlib only)
-  - Works without `pip install -r requirements.txt`
-  - Smaller attack surface
+We only need to provide:
+  - list_models(): return the available model IDs
+  - run_completion(): bridge the request to the browser extension,
+    yield chunks as they come back
 
-Switching between them:
-  The wrapper script (native_host_wrapper.bat / .sh) decides which
-  to run. Set LAGESTROEMIA_USE_FASTAPI=1 to use this version.
+The bridge code (native messaging I/O, response queues, polling,
+watchdog, stale-instance killing) is the same as native_host.py.
 
-  Edit the wrapper to:
-    set LAGESTROEMIA_USE_FASTAPI=1
-    "python.exe" "native_host.py"
-
-  native_host.py will detect the env var and exec this file instead.
+Switching between versions:
+  Set LAGESTROEMIA_USE_FASTAPI=1 in the wrapper to use this version.
+  native_host.py detects the env var and execs this file.
 
 Usage:
   python native_host_fastapi.py [--port 8081] [--host 0.0.0.0]
@@ -48,25 +43,29 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, Optional
+from collections.abc import Generator
+from typing import Optional
 
-# ---- FastAPI imports ----
-# These are optional — native_host.py works without them. This file
-# requires them.
+# ---- FastAPI + fastapi-openai-compat imports ----
 try:
-    from fastapi import FastAPI, Request, HTTPException
+    from fastapi import FastAPI, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
-    from pydantic import BaseModel, Field
+    from fastapi.responses import JSONResponse, HTMLResponse
+    from fastapi_openai_compat import (
+        create_chat_completion_router,
+        create_models_router,
+        CompletionResult,
+        MessageParam,
+    )
     import uvicorn
 except ImportError as e:
     print(f"[native-fastapi] Missing dependency: {e}", file=sys.stderr)
-    print("[native-fastapi] Install with: pip install fastapi uvicorn pydantic", file=sys.stderr)
+    print("[native-fastapi] Install with: pip install -r extension/requirements.txt", file=sys.stderr)
     sys.exit(3)
 
 
 # ============================================================================
-# Config (set in main())
+# Config
 # ============================================================================
 
 _API_KEY: Optional[str] = None
@@ -75,7 +74,6 @@ _IS_LOOPBACK: bool = True
 
 # ============================================================================
 # Bridge code — same as native_host.py
-# (Copied verbatim to keep this file self-contained.)
 # ============================================================================
 
 _stdout_lock = threading.Lock()
@@ -318,38 +316,243 @@ def _get_chat_db():
 
 
 # ============================================================================
-# Pydantic models — OpenAI Chat Completions spec
+# Bridge: extension → run_completion
 # ============================================================================
 
-class ChatMessage(BaseModel):
-    role: str
-    content: Optional[Any] = None  # string or array of content parts
-    name: Optional[str] = None
-    tool_call_id: Optional[str] = None
-    tool_calls: Optional[list] = None
-    reasoning_content: Optional[str] = None
+def _send_chat_to_extension(messages: list, model: str, body: dict) -> queue.Queue:
+    """Put a chat request in the pending list for the extension to poll.
+    Returns the response queue the caller should read from."""
+    request_id = str(uuid.uuid4())
+    q = queue.Queue()
+    with _response_queues_lock:
+        _response_queues[request_id] = q
+
+    # Build options forwarded to the extension.
+    options = {
+        'tools': body.get('tools'),
+        'tool_choice': body.get('tool_choice'),
+        'temperature': body.get('temperature'),
+        'max_tokens': body.get('max_tokens') or body.get('max_completion_tokens'),
+        'top_p': body.get('top_p'),
+        'presence_penalty': body.get('presence_penalty'),
+        'frequency_penalty': body.get('frequency_penalty'),
+        'stop': body.get('stop'),
+        'seed': body.get('seed'),
+    }
+    # Translate OpenAI's reasoning_effort to our thinking flag.
+    reasoning_effort = body.get('reasoning_effort')
+    if reasoning_effort in ('medium', 'high'):
+        options['thinking'] = True
+    options = {k: v for k, v in options.items() if v is not None}
+
+    stream = body.get('stream', False)
+    pending_req = {
+        'type': 'sendChat',
+        'requestId': request_id,
+        'messages': messages,
+        'model': model,
+        'stream': stream,
+        'options': options,
+    }
+    with _pending_lock:
+        _pending_requests.append(pending_req)
+
+    return q, request_id
 
 
-class ChatCompletionRequest(BaseModel):
-    model: str = "glm-4.7"
-    messages: list[ChatMessage]
-    stream: bool = False
-    tools: Optional[list] = None
-    tool_choice: Optional[Any] = None
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-    max_completion_tokens: Optional[int] = None
-    top_p: Optional[float] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    n: Optional[int] = None
-    stop: Optional[Any] = None
-    seed: Optional[int] = None
-    reasoning_effort: Optional[str] = None  # 'minimal'|'low'|'medium'|'high'
-    user: Optional[str] = None
-    response_format: Optional[dict] = None
-    logprobs: Optional[bool] = None
-    top_logprobs: Optional[int] = None
+class BridgeChunk:
+    """Duck-typed chunk object that fastapi-openai-compat recognizes.
+
+    The library checks for attributes:
+      - .content  → str, emitted as delta.content
+      - .reasoning → object with .reasoning_text, emitted as delta.reasoning_content
+      - .tool_calls → list, emitted as delta.tool_calls
+      - .finish_reason → str, set on the choice
+
+    We set whichever fields are present in the extension's chunk.
+    """
+    def __init__(self, chunk_data: dict):
+        self.content = chunk_data.get('content') or None
+        if not self.content:
+            self.content = None
+        reasoning = chunk_data.get('reasoning')
+        if reasoning:
+            self.reasoning = type('R', (), {'reasoning_text': reasoning})()
+        else:
+            self.reasoning = None
+        self.tool_calls = chunk_data.get('tool_calls')
+        # Backfill tool_call IDs.
+        if isinstance(self.tool_calls, list):
+            for tc in self.tool_calls:
+                if not tc.get('id'):
+                    tc['id'] = f'call_{uuid.uuid4().hex[:8]}_{tc.get("index", 0)}'
+                if not tc.get('type'):
+                    tc['type'] = 'function'
+                fn = tc.get('function')
+                if not isinstance(fn, dict):
+                    tc['function'] = {'name': '', 'arguments': ''}
+                else:
+                    if not fn.get('name'):
+                        fn['name'] = ''
+                    if not fn.get('arguments'):
+                        fn['arguments'] = ''
+        self.finish_reason = chunk_data.get('finish_reason')
+
+
+# ============================================================================
+# fastapi-openai-compat callbacks
+# ============================================================================
+
+def list_models() -> list:
+    """Return the available model IDs. Asks the extension for the live
+    list, falls back to static."""
+    request_id = str(uuid.uuid4())
+    q = queue.Queue()
+    with _response_queues_lock:
+        _response_queues[request_id] = q
+    send_message_to_extension({'type': 'getModels', 'requestId': request_id})
+    try:
+        msg = q.get(timeout=10)
+        if msg.get('type') == 'response' and msg.get('models'):
+            return msg['models']
+    except queue.Empty:
+        pass
+    finally:
+        with _response_queues_lock:
+            _response_queues.pop(request_id, None)
+    # Fallback static list
+    return ['glm-4.7', 'x-preview-l', 'glm-5.3', 'glm-5.2', 'glm-4.6v',
+            'GLM-4.1V-Thinking-FlashX', 'deep-research', 'zero']
+
+
+def run_completion(model: str, messages: list, body: dict) -> CompletionResult:
+    """Bridge the request to the extension.
+
+    For non-streaming: collect all chunks, return a ChatCompletion.
+    For streaming: yield BridgeChunk objects, the library handles SSE.
+
+    Note: this is a sync callable. The library runs it in a thread pool
+    so it doesn't block the async event loop. We block on q.get() which
+    is fine — the thread pool thread can wait.
+    """
+    if not _extension_connected.is_set():
+        raise RuntimeError(
+            'Browser extension is not connected. Make sure the Lagestroemia '
+            'extension is installed and a chat.z.ai tab is open.'
+        )
+
+    # Convert messages to plain dicts for the extension.
+    msg_dicts = []
+    for m in messages:
+        if isinstance(m, dict):
+            msg_dicts.append(m)
+        else:
+            msg_dicts.append(m)
+
+    q, request_id = _send_chat_to_extension(msg_dicts, model, body)
+    stream = body.get('stream', False)
+
+    if stream:
+        # Return a generator. The library wraps each yielded BridgeChunk
+        # as a chat.completion.chunk SSE message.
+        def stream_generator() -> Generator:
+            try:
+                while True:
+                    try:
+                        msg = q.get(timeout=180)
+                    except queue.Empty:
+                        # Yield an error chunk — the library will surface it.
+                        raise RuntimeError('Extension did not respond in 180 seconds')
+
+                    msg_type = msg.get('type', '')
+                    if msg_type == 'streamChunk':
+                        chunk = msg.get('chunk', {})
+                        # Skip empty chunks (no content, no reasoning, no tool_calls, no finish_reason).
+                        if not any([chunk.get('content'), chunk.get('reasoning'),
+                                    chunk.get('tool_calls'), chunk.get('finish_reason')]):
+                            continue
+                        yield BridgeChunk(chunk)
+                    elif msg_type in ('streamEnd', 'response'):
+                        return
+                    elif msg_type == 'error':
+                        raise RuntimeError(msg.get('error', 'Unknown error'))
+            finally:
+                with _response_queues_lock:
+                    _response_queues.pop(request_id, None)
+
+        return stream_generator()
+    else:
+        # Non-streaming: collect all chunks into a single response.
+        from fastapi_openai_compat import ChatCompletion, Choice, Message
+        import time as _time
+
+        full_content = ''
+        reasoning = ''
+        tool_calls_by_index = {}
+        final_finish_reason = None
+
+        try:
+            while True:
+                try:
+                    msg = q.get(timeout=180)
+                except queue.Empty:
+                    raise RuntimeError('Extension did not respond in 180 seconds')
+
+                msg_type = msg.get('type', '')
+                if msg_type == 'streamChunk':
+                    chunk = msg.get('chunk', {})
+                    full_content += chunk.get('content', '')
+                    reasoning += chunk.get('reasoning', '')
+                    tcs = chunk.get('tool_calls')
+                    if isinstance(tcs, list):
+                        for tc in tcs:
+                            idx = tc.get('index', 0)
+                            if idx not in tool_calls_by_index:
+                                tool_calls_by_index[idx] = {
+                                    'index': idx,
+                                    'id': tc.get('id') or f'call_{uuid.uuid4().hex[:8]}_{idx}',
+                                    'type': tc.get('type', 'function'),
+                                    'function': {'name': '', 'arguments': ''},
+                                }
+                            acc = tool_calls_by_index[idx]
+                            fn = tc.get('function', {})
+                            if fn.get('name'):
+                                acc['function']['name'] += fn['name']
+                            if fn.get('arguments'):
+                                acc['function']['arguments'] += fn['arguments']
+                    if chunk.get('finish_reason'):
+                        final_finish_reason = chunk['finish_reason']
+                elif msg_type in ('streamEnd', 'response'):
+                    break
+                elif msg_type == 'error':
+                    raise RuntimeError(msg.get('error', 'Unknown error'))
+        finally:
+            with _response_queues_lock:
+                _response_queues.pop(request_id, None)
+
+        message = {'role': 'assistant'}
+        if tool_calls_by_index:
+            message['content'] = None
+            message['tool_calls'] = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)]
+        else:
+            message['content'] = full_content
+        if reasoning:
+            message['reasoning_content'] = reasoning
+
+        finish_reason = final_finish_reason or ('tool_calls' if tool_calls_by_index else 'stop')
+
+        return ChatCompletion(
+            id=f'chatcmpl-{uuid.uuid4().hex[:24]}',
+            object='chat.completion',
+            created=int(_time.time()),
+            model=model,
+            choices=[Choice(
+                index=0,
+                message=Message(**message),
+                finish_reason=finish_reason,
+            )],
+            usage={'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
+        )
 
 
 # ============================================================================
@@ -357,9 +560,9 @@ class ChatCompletionRequest(BaseModel):
 # ============================================================================
 
 app = FastAPI(
-    title="Lagestroemia native host (FastAPI)",
+    title="Lagestroemia native host (FastAPI + fastapi-openai-compat)",
     description="OpenAI-compatible HTTP server bridging to chat.z.ai via the Lagestroemia browser extension.",
-    version="0.9.0",
+    version="0.10.0",
 )
 
 app.add_middleware(
@@ -369,9 +572,20 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+# Register the OpenAI-compatible routers from fastapi-openai-compat.
+# These handle /v1/chat/completions and /v1/models with full OpenAI spec
+# compliance — SSE streaming, tool calls, reasoning content, etc.
+chat_router = create_chat_completion_router(
+    list_models=list_models,
+    run_completion=run_completion,
+)
+app.include_router(chat_router)
+
+models_router = create_models_router(list_models=list_models)
+app.include_router(models_router)
+
 
 def _is_loopback_client(request: Request) -> bool:
-    """True if the request originates from a local/private IP."""
     client_ip = request.client.host if request.client else '127.0.0.1'
     if client_ip in ('127.0.0.1', '::1', 'localhost'):
         return True
@@ -390,37 +604,25 @@ def _is_loopback_client(request: Request) -> bool:
     return False
 
 
-def _openai_error(status: int, message: str, error_type: str = 'invalid_request_error',
-                  code: Optional[str] = None) -> JSONResponse:
-    """Return an OpenAI-spec-shaped error response."""
-    body = {
-        'error': {
-            'message': message,
-            'type': error_type,
-        }
-    }
-    if code:
-        body['error']['code'] = code
-    return JSONResponse(status_code=status, content=body)
-
-
 @app.get("/")
 async def index():
-    """Small HTML index page."""
     html = '''<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>Lagestroemia native host (FastAPI)</title>
+<head><meta charset="utf-8"><title>Lagestroemia native host</title>
 <style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#222}code{background:#f4f4f4;padding:2px 6px;border-radius:3px}a{color:#7C4DFF}</style>
 </head>
 <body>
-<h1>Lagestroemia native host (FastAPI)</h1>
-<p>OpenAI-compatible HTTP server. Bridges external clients (opencode, Cline, Continue, curl) to the Lagestroemia browser extension, which forwards requests to chat.z.ai.</p>
+<h1>Lagestroemia native host</h1>
+<p>OpenAI-compatible HTTP server powered by
+<a href="https://github.com/deepset-ai/fastapi-openai-compat">fastapi-openai-compat</a>.
+Bridges external clients (opencode, Cline, Continue, curl) to the Lagestroemia
+browser extension, which forwards requests to chat.z.ai.</p>
 <h2>Endpoints</h2>
 <ul>
   <li><code>GET /health</code> — health check</li>
-  <li><code>GET /v1/models</code> — list models</li>
-  <li><code>POST /v1/chat/completions</code> — chat (stream + non-stream)</li>
-  <li><code>GET /docs</code> — OpenAPI docs (interactive)</li>
+  <li><code>GET /v1/models</code> — list models (from fastapi-openai-compat)</li>
+  <li><code>POST /v1/chat/completions</code> — chat (stream + non-stream, tools, reasoning)</li>
+  <li><code>GET /docs</code> — interactive OpenAPI docs</li>
 </ul>
 <h2>Quick test</h2>
 <pre>curl http://127.0.0.1:8081/health
@@ -438,285 +640,28 @@ async def health():
     return {"ok": True, "extension_connected": _extension_connected.is_set()}
 
 
-@app.get("/v1/models")
-async def list_models():
-    # Ask the extension for the live list, fall back to static.
-    request_id = str(uuid.uuid4())
-    q = queue.Queue()
-    with _response_queues_lock:
-        _response_queues[request_id] = q
-    send_message_to_extension({'type': 'getModels', 'requestId': request_id})
-    try:
-        msg = q.get(timeout=10)
-        if msg.get('type') == 'response' and msg.get('models'):
-            models = [{'id': m, 'object': 'model', 'owned_by': 'z.ai'} for m in msg['models']]
-            return {'object': 'list', 'data': models}
-    except queue.Empty:
-        pass
-    finally:
-        with _response_queues_lock:
-            _response_queues.pop(request_id, None)
-    # Fallback static list
-    models = [
-        {'id': 'glm-4.7', 'object': 'model', 'owned_by': 'z.ai'},
-        {'id': 'x-preview-l', 'object': 'model', 'owned_by': 'z.ai'},
-        {'id': 'glm-5.3', 'object': 'model', 'owned_by': 'z.ai'},
-        {'id': 'glm-5.2', 'object': 'model', 'owned_by': 'z.ai'},
-        {'id': 'glm-4.6v', 'object': 'model', 'owned_by': 'z.ai'},
-        {'id': 'GLM-4.1V-Thinking-FlashX', 'object': 'model', 'owned_by': 'z.ai'},
-        {'id': 'deep-research', 'object': 'model', 'owned_by': 'z.ai'},
-        {'id': 'zero', 'object': 'model', 'owned_by': 'z.ai'},
-    ]
-    return {'object': 'list', 'data': models}
-
-
-@app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest, request: Request):
-    if not _extension_connected.is_set():
-        return _openai_error(503,
-            'Browser extension is not connected. Make sure the Lagestroemia '
-            'extension is installed and a chat.z.ai tab is open.',
-            error_type='server_error')
-
-    # Convert Pydantic messages to dicts for the extension.
-    messages = [m.model_dump(exclude_none=True) for m in req.messages]
-
-    # Build options forwarded to the extension.
-    options = {
-        'tools': req.tools,
-        'tool_choice': req.tool_choice,
-        'temperature': req.temperature,
-        'max_tokens': req.max_tokens or req.max_completion_tokens,
-        'top_p': req.top_p,
-        'presence_penalty': req.presence_penalty,
-        'frequency_penalty': req.frequency_penalty,
-        'stop': req.stop,
-        'seed': req.seed,
-    }
-    if req.reasoning_effort in ('medium', 'high'):
-        options['thinking'] = True
-    options = {k: v for k, v in options.items() if v is not None}
-
-    request_id = str(uuid.uuid4())
-    q = queue.Queue()
-    with _response_queues_lock:
-        _response_queues[request_id] = q
-
-    pending_req = {
-        'type': 'sendChat',
-        'requestId': request_id,
-        'messages': messages,
-        'model': req.model,
-        'stream': req.stream,
-        'options': options,
-    }
-    with _pending_lock:
-        _pending_requests.append(pending_req)
-
-    # Wait for the first response.
-    try:
-        first_msg = q.get(timeout=180)
-        msg_type = first_msg.get('type', '')
-        if msg_type == 'error':
-            with _response_queues_lock:
-                _response_queues.pop(request_id, None)
-            return _openai_error(502, first_msg.get('error', 'Unknown error'),
-                                 error_type='upstream_error')
-        q.put(first_msg)  # put it back for the streaming loop
-    except queue.Empty:
-        with _response_queues_lock:
-            _response_queues.pop(request_id, None)
-        return _openai_error(504,
-            'Extension did not respond in 180 seconds. Likely causes:\n'
-            '  1. Captcha required — switch to Firefox and solve the Aliyun popup\n'
-            '  2. chat.z.ai tab is closed or backgrounded\n'
-            '  3. Extension crashed — check browser console (F12)\n'
-            '  4. Content script not loaded — reload the chat.z.ai tab',
-            error_type='timeout')
-
-    if req.stream:
-        return StreamingResponse(
-            _stream_sse(q, request_id, req.model),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
-        )
-    else:
-        return await _collect_response(q, request_id, req.model)
-
-
-async def _stream_sse(q: queue.Queue, request_id: str, model: str):
-    """Async generator that yields SSE chunks."""
-    try:
-        while True:
-            try:
-                msg = q.get(timeout=120)
-            except queue.Empty:
-                yield 'data: {"error":{"message":"Timeout waiting for response"}}\n\n'
-                break
-
-            msg_type = msg.get('type', '')
-
-            if msg_type == 'streamChunk':
-                chunk = msg.get('chunk', {})
-                content = chunk.get('content', '')
-                reasoning = chunk.get('reasoning', '')
-                tool_calls = chunk.get('tool_calls')
-                finish_reason = chunk.get('finish_reason')
-
-                # Backfill tool_call IDs.
-                if isinstance(tool_calls, list):
-                    for tc in tool_calls:
-                        if not tc.get('id'):
-                            tc['id'] = f'call_{request_id[:8]}_{tc.get("index", 0)}'
-                        if not tc.get('type'):
-                            tc['type'] = 'function'
-                        fn = tc.get('function')
-                        if not isinstance(fn, dict):
-                            tc['function'] = {'name': '', 'arguments': ''}
-                        else:
-                            if not fn.get('name'):
-                                fn['name'] = ''
-                            if not fn.get('arguments'):
-                                fn['arguments'] = ''
-
-                delta = {}
-                if content:
-                    delta['content'] = content
-                if reasoning:
-                    delta['reasoning_content'] = reasoning
-                if tool_calls:
-                    delta['tool_calls'] = tool_calls
-                if not delta and not finish_reason:
-                    continue
-
-                choice = {'index': 0, 'delta': delta, 'finish_reason': None}
-                if finish_reason:
-                    choice['finish_reason'] = finish_reason
-
-                sse_chunk = {
-                    'id': request_id,
-                    'object': 'chat.completion.chunk',
-                    'model': model,
-                    'choices': [choice],
-                }
-                yield f'data: {json.dumps(sse_chunk)}\n\n'
-
-            elif msg_type in ('streamEnd', 'response'):
-                final_chunk = {
-                    'id': request_id,
-                    'object': 'chat.completion.chunk',
-                    'model': model,
-                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}],
-                }
-                yield f'data: {json.dumps(final_chunk)}\n\n'
-                yield 'data: [DONE]\n\n'
-                break
-
-            elif msg_type == 'error':
-                error_msg = msg.get('error', 'Unknown error')
-                yield f'data: {{"error":{{"message":"{error_msg}"}}}}\n\n'
-                break
-    finally:
-        with _response_queues_lock:
-            _response_queues.pop(request_id, None)
-
-
-async def _collect_response(q: queue.Queue, request_id: str, model: str) -> JSONResponse:
-    """Collect all chunks into a single non-streaming response."""
-    full_content = ''
-    reasoning = ''
-    tool_calls_by_index = {}
-    final_finish_reason = None
-
-    try:
-        while True:
-            try:
-                msg = q.get(timeout=120)
-            except queue.Empty:
-                return _openai_error(504, 'Timeout', error_type='timeout')
-
-            msg_type = msg.get('type', '')
-            if msg_type == 'streamChunk':
-                chunk = msg.get('chunk', {})
-                full_content += chunk.get('content', '')
-                reasoning += chunk.get('reasoning', '')
-                tcs = chunk.get('tool_calls')
-                if isinstance(tcs, list):
-                    for tc in tcs:
-                        idx = tc.get('index', 0)
-                        if idx not in tool_calls_by_index:
-                            tool_calls_by_index[idx] = {
-                                'index': idx,
-                                'id': tc.get('id') or f'call_{request_id[:8]}_{idx}',
-                                'type': tc.get('type', 'function'),
-                                'function': {'name': '', 'arguments': ''},
-                            }
-                        acc = tool_calls_by_index[idx]
-                        fn = tc.get('function', {})
-                        if fn.get('name'):
-                            acc['function']['name'] += fn['name']
-                        if fn.get('arguments'):
-                            acc['function']['arguments'] += fn['arguments']
-                        if tc.get('id'):
-                            acc['id'] = tc['id']
-                        if tc.get('type'):
-                            acc['type'] = tc['type']
-                if chunk.get('finish_reason'):
-                    final_finish_reason = chunk['finish_reason']
-            elif msg_type in ('streamEnd', 'response'):
-                break
-            elif msg_type == 'error':
-                return _openai_error(502, msg.get('error', 'Unknown error'),
-                                     error_type='upstream_error')
-    finally:
-        with _response_queues_lock:
-            _response_queues.pop(request_id, None)
-
-    message = {'role': 'assistant'}
-    if tool_calls_by_index:
-        message['content'] = None
-        message['tool_calls'] = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)]
-    else:
-        message['content'] = full_content
-    if reasoning:
-        message['reasoning_content'] = reasoning
-
-    finish_reason = final_finish_reason or ('tool_calls' if tool_calls_by_index else 'stop')
-
-    return JSONResponse(content={
-        'id': request_id,
-        'object': 'chat.completion',
-        'model': model,
-        'choices': [{'index': 0, 'message': message, 'finish_reason': finish_reason}],
-        'usage': {
-            'prompt_tokens': 0,
-            'completion_tokens': 0,
-            'total_tokens': 0,
-        },
-    })
-
-
 # ---- Internal endpoints (loopback only) ----
+# These are NOT part of the OpenAI spec — they're the bridge between
+# the native host and the browser extension. The extension polls
+# /_pending for chat requests and POSTs responses to /_response.
+
+from fastapi import HTTPException
+
 
 @app.get("/_pending")
 async def pending(request: Request):
     if not _is_loopback_client(request):
-        return _openai_error(404, 'Not found')
+        raise HTTPException(status_code=404, detail="Not found")
     with _pending_lock:
         if _pending_requests:
-            req = _pending_requests.pop(0)
-            return req
+            return _pending_requests.pop(0)
         return {'type': 'none'}
 
 
 @app.post("/_response")
 async def response(request: Request):
     if not _is_loopback_client(request):
-        return _openai_error(404, 'Not found')
+        raise HTTPException(status_code=404, detail="Not found")
     body = await request.json()
     request_id = body.get('requestId', '')
     with _response_queues_lock:
@@ -729,7 +674,7 @@ async def response(request: Request):
 @app.get("/_debug")
 async def debug(request: Request):
     if not _is_loopback_client(request):
-        return _openai_error(404, 'Not found')
+        raise HTTPException(status_code=404, detail="Not found")
     with _pending_lock:
         pending_count = len(_pending_requests)
     with _response_queues_lock:
@@ -740,6 +685,7 @@ async def debug(request: Request):
         'active_queues': queue_ids,
         'api_key_set': bool(_API_KEY),
         'is_loopback_bind': _IS_LOOPBACK,
+        'http_layer': 'fastapi-openai-compat',
     }
 
 
@@ -753,9 +699,8 @@ async def list_chats():
             'SELECT id, title, model, created_at, updated_at FROM chats ORDER BY updated_at DESC'
         ).fetchall()
         conn.close()
-    chats = [{'id': r[0], 'title': r[1], 'model': r[2],
-              'created_at': r[3], 'updated_at': r[4]} for r in rows]
-    return {'chats': chats}
+    return {'chats': [{'id': r[0], 'title': r[1], 'model': r[2],
+                       'created_at': r[3], 'updated_at': r[4]} for r in rows]}
 
 
 @app.get("/v1/chats/{chat_id}")
@@ -765,7 +710,7 @@ async def get_chat(chat_id: str):
         row = conn.execute('SELECT * FROM chats WHERE id = ?', (chat_id,)).fetchone()
         conn.close()
     if not row:
-        return _openai_error(404, 'Chat not found')
+        raise HTTPException(status_code=404, detail="Chat not found")
     return {
         'id': row[0], 'title': row[1], 'model': row[2],
         'messages': json.loads(row[3]),
@@ -845,7 +790,8 @@ def main():
         if killed > 0:
             print(f"[native-fastapi] Killed {killed} stale instance(s).", file=sys.stderr)
 
-    print(f"[native-fastapi] Starting FastAPI server on http://{HOST}:{PORT}", file=sys.stderr)
+    print(f"[native-fastapi] Starting FastAPI server (fastapi-openai-compat) on http://{HOST}:{PORT}", file=sys.stderr)
+    print(f"[native-fastapi] HTTP layer: fastapi-openai-compat (https://github.com/deepset-ai/fastapi-openai-compat)", file=sys.stderr)
     print(f"[native-fastapi] Bind mode: {'loopback' if _IS_LOOPBACK else 'LAN-reachable'}", file=sys.stderr)
     print(f"[native-fastapi] Reachable URLs:", file=sys.stderr)
     for url in _enumerate_lan_urls(HOST, PORT):
@@ -853,8 +799,8 @@ def main():
     print(f"[native-fastapi] Endpoints:", file=sys.stderr)
     print(f"[native-fastapi]   GET  /            (index)", file=sys.stderr)
     print(f"[native-fastapi]   GET  /health", file=sys.stderr)
-    print(f"[native-fastapi]   GET  /v1/models", file=sys.stderr)
-    print(f"[native-fastapi]   POST /v1/chat/completions", file=sys.stderr)
+    print(f"[native-fastapi]   GET  /v1/models   (fastapi-openai-compat)", file=sys.stderr)
+    print(f"[native-fastapi]   POST /v1/chat/completions  (fastapi-openai-compat)", file=sys.stderr)
     print(f"[native-fastapi]   GET  /docs         (OpenAPI docs)", file=sys.stderr)
     print(f"[native-fastapi]   GET  /_pending     (internal, loopback only)", file=sys.stderr)
     print(f"[native-fastapi]   POST /_response    (internal, loopback only)", file=sys.stderr)
@@ -871,10 +817,6 @@ def main():
     _extension_connected.set()
     send_message_to_extension({'type': 'nativeReady', 'port': PORT})
 
-    # Run uvicorn in the main thread. We can't use the async version
-    # because uvicorn.run() blocks, and we need the main thread to be
-    # blocked so the background threads can call _trigger_shutdown via
-    # os._exit() when stdin closes.
     try:
         uvicorn.run(
             app,
@@ -882,7 +824,6 @@ def main():
             port=PORT,
             log_level='warning',
             access_log=False,
-            # Disable the uvicorn banner — we already printed our own.
             timeout_keep_alive=30,
         )
     except KeyboardInterrupt:

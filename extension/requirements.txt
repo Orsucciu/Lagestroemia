@@ -8,11 +8,13 @@
 # To switch to the FastAPI version, set LAGESTROEMIA_USE_FASTAPI=1
 # in the wrapper script (native_host_wrapper.bat / .sh).
 
+# The OpenAI-compatible HTTP layer — handles SSE, tool calls,
+# reasoning content, forward compatibility, /docs.
+# https://github.com/deepset-ai/fastapi-openai-compat
+fastapi-openai-compat>=0.4.0
+
+# FastAPI + uvicorn are dependencies of fastapi-openai-compat, but
+# we pin them explicitly for reproducibility.
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.5.0
-
-# sse-starlette is not needed — we use StreamingResponse with
-# manual SSE framing for simplicity. If you want to switch to
-# sse-starlette, uncomment:
-# sse-starlette>=1.8.0
