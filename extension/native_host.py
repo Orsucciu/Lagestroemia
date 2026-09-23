@@ -400,6 +400,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         print(f"[http] {self.address_string()} - {format % args}", file=sys.stderr)
 
     def do_GET(self):
+        # / — show a small index page so curl http://host:8081/ doesn't
+        # return a confusing 404. Lists the available endpoints.
+        if self.path == '/' or self.path == '':
+            self._handle_index()
+            return
         # /health is always reachable so callers can probe without auth.
         if self.path == '/health':
             self._send_json(200, {'ok': True, 'extension_connected': _extension_connected.is_set()})
@@ -457,6 +462,53 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self._send_cors_headers()
         self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _handle_index(self):
+        """GET / — small HTML index page listing the available endpoints."""
+        html = '''<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Lagestroemia native host</title>
+<style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#222}code{background:#f4f4f4;padding:2px 6px;border-radius:3px}a{color:#7C4DFF}</style>
+</head>
+<body>
+<h1>Lagestroemia native host</h1>
+<p>OpenAI-compatible HTTP server running on this machine. Bridges
+external clients (opencode, Cline, Continue, curl, etc.) to the
+Lagestroemia browser extension, which forwards requests to chat.z.ai.</p>
+<h2>Endpoints</h2>
+<ul>
+  <li><code>GET /health</code> — returns <code>{"ok": true, "extension_connected": ...}</code></li>
+  <li><code>GET /v1/models</code> — list of available z.ai models</li>
+  <li><code>POST /v1/chat/completions</code> — OpenAI-shaped chat completions (stream and non-stream)</li>
+</ul>
+<h2>Quick test</h2>
+<pre>curl http://127.0.0.1:8081/health
+curl http://127.0.0.1:8081/v1/models
+curl http://127.0.0.1:8081/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}],"stream":false}'</pre>
+<h2>opencode config</h2>
+<pre>{
+  "provider": {
+    "lagestroemia": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Lagestroemia (z.ai)",
+      "options": { "baseURL": "http://127.0.0.1:8081/v1" },
+      "models": { "glm-4.7": { "name": "GLM-4.7" } }
+    }
+  }
+}</pre>
+<p>Auth is disabled by default. See <code>docs/opencode-setup.md</code>
+for WSL2 / LAN setup.</p>
+</body>
+</html>'''
+        data = html.encode('utf-8')
+        self.send_response(200)
+        self._send_cors_headers()
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
