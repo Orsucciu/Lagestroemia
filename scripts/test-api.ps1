@@ -16,18 +16,24 @@ param(
     [string]$ServerHost = "0.0.0.0",
     [int]$Port = 8081,
     [string]$ApiKey = $env:LAGESTROEMIA_API_KEY,
-    [switch]$SkipTurns
+    [switch]$SkipTurns,
+    [switch]$NoColor
 )
 
 $ErrorActionPreference = "Stop"
 
-function Write-Step($num, $msg) { Write-Host "`n$num. $msg" -ForegroundColor Cyan }
-function Write-Ok($msg) { Write-Host "   OK $msg" -ForegroundColor Green }
-function Write-Err($msg) { Write-Host "   X  $msg" -ForegroundColor Red }
-function Write-Info($msg) { Write-Host "   i  $msg" -ForegroundColor Yellow }
+function Write-Step($num, $msg) { if (-not $NoColor) { Write-Host "`n$num. $msg" -ForegroundColor Cyan } else { Write-Host "`n$num. $msg" } }
+function Write-Ok($msg) { if (-not $NoColor) { Write-Host "   OK $msg" -ForegroundColor Green } else { Write-Host "   OK $msg" } }
+function Write-Err($msg) { if (-not $NoColor) { Write-Host "   X  $msg" -ForegroundColor Red } else { Write-Host "   X  $msg" } }
+function Write-Info($msg) { if (-not $NoColor) { Write-Host "   i  $msg" -ForegroundColor Yellow } else { Write-Host "   i  $msg" } }
+
+# Dark gray for thinking — visible but visually distinct from the answer.
+function Write-Thinking($msg) { if (-not $NoColor) { Write-Host -NoNewline $msg -ForegroundColor DarkGray } else { Write-Host -NoNewline $msg } }
+# White (default) for the answer.
+function Write-Answer($msg) { Write-Host -NoNewline $msg }
 
 $BaseUrl = "http://${ServerHost}:${Port}"
-Write-Host "Testing against $BaseUrl" -ForegroundColor Cyan
+Write-Host "Testing against $BaseUrl" -ForegroundColor $(if ($NoColor) { 'White' } else { 'Cyan' })
 if ($ApiKey) {
     $keyPreview = $ApiKey.Substring(0, [Math]::Min(8, $ApiKey.Length))
     Write-Host "Using API key from -ApiKey or env var (${keyPreview}...)" -ForegroundColor DarkGray
@@ -41,10 +47,22 @@ function Get-AuthHeaders {
 }
 
 function Send-ChatMessage {
-    param([string]$Message, [int]$TimeoutSec = 60)
-    $bodyJson = @{ model = "glm-4.7"; messages = @(@{ role = "user"; content = $Message }); stream = $true } | ConvertTo-Json -Depth 5 -Compress
+    param([string]$Message, [int]$TimeoutSec = 120)
+
+    # Request thinking explicitly via the body. The native host
+    # forwards 'reasoning_effort' and translates it to the extension's
+    # 'thinking' flag. chat.z.ai's UI shows a "Thought Process"
+    # section when this is enabled.
+    $bodyObj = @{
+        model = "glm-4.7"
+        messages = @(@{ role = "user"; content = $Message })
+        stream = $true
+        reasoning_effort = "high"
+    }
+    $bodyJson = $bodyObj | ConvertTo-Json -Depth 5 -Compress
     $tempFile = [System.IO.Path]::GetTempFileName()
     [System.IO.File]::WriteAllText($tempFile, $bodyJson, [System.Text.Encoding]::UTF8)
+
     try {
         $request = [System.Net.HttpWebRequest]::Create("$BaseUrl/v1/chat/completions")
         $request.Method = "POST"
@@ -58,7 +76,15 @@ function Send-ChatMessage {
         $stream.Close()
         $response = $request.GetResponse()
         $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+
         $fullContent = ""
+        $fullReasoning = ""
+        $inThinkingSection = $false
+        $inAnswerSection = $false
+        $chunkCount = 0
+        $reasoningChunkCount = 0
+        $contentChunkCount = 0
+
         while (-not $reader.EndOfStream) {
             $line = $reader.ReadLine()
             if ($line -match '^data: (.+)') {
@@ -66,16 +92,48 @@ function Send-ChatMessage {
                 if ($data -eq '[DONE]') { break }
                 try {
                     $chunk = $data | ConvertFrom-Json
-                    if ($chunk.choices[0].delta.content) {
-                        $fullContent += $chunk.choices[0].delta.content
-                        Write-Host -NoNewline $chunk.choices[0].delta.content
+                    $delta = $chunk.choices[0].delta
+                    $chunkCount++
+
+                    # Reasoning content (thinking).
+                    if ($delta.reasoning_content) {
+                        if (-not $inThinkingSection) {
+                            $inThinkingSection = $true
+                            Write-Host ""
+                            Write-Host "   --- Thinking ---" -ForegroundColor $(if ($NoColor) { 'White' } else { 'DarkGray' })
+                            Write-Host "   " -NoNewline -ForegroundColor $(if ($NoColor) { 'White' } else { 'DarkGray' })
+                        }
+                        $fullReasoning += $delta.reasoning_content
+                        Write-Thinking $delta.reasoning_content
+                        $reasoningChunkCount++
+                    }
+
+                    # Regular content (answer).
+                    if ($delta.content) {
+                        if ($inThinkingSection -and -not $inAnswerSection) {
+                            $inAnswerSection = $true
+                            Write-Host ""
+                            Write-Host "   --- Answer ---" -ForegroundColor $(if ($NoColor) { 'White' } else { 'Green' })
+                            Write-Host "   " -NoNewline
+                        }
+                        $fullContent += $delta.content
+                        Write-Answer $delta.content
+                        $contentChunkCount++
                     }
                 } catch {}
             }
         }
         $reader.Close()
         $response.Close()
-        return $fullContent
+        Write-Host ""  # newline after the streamed output
+
+        return @{
+            Content = $fullContent
+            Reasoning = $fullReasoning
+            ChunkCount = $chunkCount
+            ReasoningChunkCount = $reasoningChunkCount
+            ContentChunkCount = $contentChunkCount
+        }
     } catch [System.Net.WebException] {
         if ($_.Exception.Response) {
             $respStream = $_.Exception.Response.GetResponseStream()
@@ -125,22 +183,86 @@ if ($SkipTurns) {
     exit 0
 }
 
-# 3. Turn 1
-Write-Step "3" "Turn 1: 'Say hello in French'"
-Write-Info "Sending..."
-$reply1 = Send-ChatMessage -Message "Say hello in French" -TimeoutSec 60
+# 3. Turn 1 — a question that benefits from thinking
+Write-Step "3" "Turn 1: 'Explain quantum entanglement in 2 sentences.'"
+Write-Info "Sending (reasoning_effort=high)..."
+$reply1 = Send-ChatMessage -Message "Explain quantum entanglement in 2 sentences." -TimeoutSec 120
 Write-Host ""
-if ($reply1) { Write-Ok "Reply: $reply1" } else { Write-Err "No reply" }
+if ($reply1) {
+    Write-Ok "Total chunks: $($reply1.ChunkCount) (reasoning: $($reply1.ReasoningChunkCount), content: $($reply1.ContentChunkCount))"
+    if ($reply1.Reasoning) {
+        Write-Ok "Reasoning captured ($($reply1.Reasoning.Length) chars)"
+    } else {
+        Write-Info "No reasoning captured — model may not have produced thinking for this prompt"
+    }
+    if ($reply1.Content) {
+        Write-Ok "Content captured ($($reply1.Content.Length) chars)"
+    } else {
+        Write-Err "No content captured"
+    }
+} else {
+    Write-Err "No reply"
+}
 
-# 4. Turn 2
-Write-Step "4" "Turn 2: 'Now say goodbye in Spanish'"
-Write-Info "Sending..."
-$reply2 = Send-ChatMessage -Message "Now say goodbye in Spanish" -TimeoutSec 60
+# 4. Turn 2 — a follow-up that requires the context from turn 1
+Write-Step "4" "Turn 2: 'Now explain it like I'm 5.'"
+Write-Info "Sending (reasoning_effort=high)..."
+$reply2 = Send-ChatMessage -Message "Now explain it like I'm 5." -TimeoutSec 120
 Write-Host ""
-if ($reply2) { Write-Ok "Reply: $reply2" } else { Write-Err "No reply" }
+if ($reply2) {
+    Write-Ok "Total chunks: $($reply2.ChunkCount) (reasoning: $($reply2.ReasoningChunkCount), content: $($reply2.ContentChunkCount))"
+    if ($reply2.Reasoning) {
+        Write-Ok "Reasoning captured ($($reply2.Reasoning.Length) chars)"
+    } else {
+        Write-Info "No reasoning captured — model may not have produced thinking for this prompt"
+    }
+    if ($reply2.Content) {
+        Write-Ok "Content captured ($($reply2.Content.Length) chars)"
+    } else {
+        Write-Err "No content captured"
+    }
+} else {
+    Write-Err "No reply"
+}
 
 # 5. Summary
 Write-Host "`n=== Summary ===" -ForegroundColor Cyan
-Write-Info "Turn 1: $(if ($reply1) { $reply1.Substring(0, [Math]::Min(100, $reply1.Length)) } else { '(none)' })"
-Write-Info "Turn 2: $(if ($reply2) { $reply2.Substring(0, [Math]::Min(100, $reply2.Length)) } else { '(none)' })"
-if ($reply1 -and $reply2) { Write-Ok "Multi-turn conversation works!" }
+if ($reply1 -and $reply2) {
+    Write-Ok "Both turns returned responses."
+    Write-Host ""
+    Write-Host "Turn 1 thinking (first 200 chars):" -ForegroundColor $(if ($NoColor) { 'White' } else { 'DarkGray' })
+    if ($reply1.Reasoning) {
+        Write-Host "   $($reply1.Reasoning.Substring(0, [Math]::Min(200, $reply1.Reasoning.Length)))" -ForegroundColor $(if ($NoColor) { 'White' } else { 'DarkGray' })
+    } else {
+        Write-Info "   (none)"
+    }
+    Write-Host ""
+    Write-Host "Turn 1 answer (first 200 chars):" -ForegroundColor Green
+    if ($reply1.Content) {
+        Write-Host "   $($reply1.Content.Substring(0, [Math]::Min(200, $reply1.Content.Length)))" -ForegroundColor Green
+    } else {
+        Write-Err "   (none)"
+    }
+    Write-Host ""
+    Write-Host "Turn 2 thinking (first 200 chars):" -ForegroundColor $(if ($NoColor) { 'White' } else { 'DarkGray' })
+    if ($reply2.Reasoning) {
+        Write-Host "   $($reply2.Reasoning.Substring(0, [Math]::Min(200, $reply2.Reasoning.Length)))" -ForegroundColor $(if ($NoColor) { 'White' } else { 'DarkGray' })
+    } else {
+        Write-Info "   (none)"
+    }
+    Write-Host ""
+    Write-Host "Turn 2 answer (first 200 chars):" -ForegroundColor Green
+    if ($reply2.Content) {
+        Write-Host "   $($reply2.Content.Substring(0, [Math]::Min(200, $reply2.Content.Length)))" -ForegroundColor Green
+    } else {
+        Write-Err "   (none)"
+    }
+    Write-Host ""
+    if ($reply1.Reasoning -and $reply2.Reasoning) {
+        Write-Ok "Thinking captured on BOTH turns — reasoning_content is working!"
+    } elseif ($reply1.Reasoning -or $reply2.Reasoning) {
+        Write-Info "Thinking captured on at least one turn — partial success."
+    } else {
+        Write-Err "No thinking captured on either turn. Check that the model has 'Deep Think' enabled in chat.z.ai, or that reasoning_effort=high is being honored."
+    }
+}
