@@ -1020,6 +1020,7 @@
 
     var lastLength = 0;
     var lastContent = '';
+    var lastReasoning = '';
     var stableCount = 0;
     var prevCount = document.querySelectorAll('.chat-assistant').length;
     var capacityDetected = false;
@@ -1076,18 +1077,23 @@
       if (allAssistant.length > prevCount) {
         var latest = allAssistant[allAssistant.length - 1];
         var currentContent = '';
+        var currentReasoning = '';
 
-        // Read ONLY the response text, excluding the "Thinking" section.
+        // Read the response text AND the thinking text separately.
         // Structure inside .chat-assistant > .markdown-prose:
-        //   .thinking-chain-container > blockquote > p.svelte-4sys19 (thinking - SKIP)
-        //   p.svelte-4sys19 (direct children = response - READ)
-        //   ul/li (lists in response - READ)
+        //   .thinking-chain-container > blockquote > p.svelte-4sys19 (thinking)
+        //   p.svelte-4sys19 (direct children = response)
+        //   ul/li (lists in response)
+        //
+        // We track thinking and content separately so we can emit
+        // them as different chunk types: thinking → reasoning_content,
+        // content → content. opencode and other OpenAI clients can
+        // then render them differently (e.g. collapsed thinking section).
         var allP = latest.querySelectorAll('p.svelte-4sys19');
         if (allP.length === 0) {
           allP = latest.querySelectorAll('p'); // fallback
         }
         for (var i = 0; i < allP.length; i++) {
-          // Skip if inside a <blockquote> (that's the thinking section).
           var parent = allP[i].parentElement;
           var isThinking = false;
           while (parent && parent !== latest) {
@@ -1095,14 +1101,15 @@
               isThinking = true;
               break;
             }
-            // Also check class-based thinking containers.
             if (parent.classList && parent.classList.contains('thinking-chain-container')) {
               isThinking = true;
               break;
             }
             parent = parent.parentElement;
           }
-          if (!isThinking) {
+          if (isThinking) {
+            currentReasoning += allP[i].textContent + '\n';
+          } else {
             currentContent += allP[i].textContent + '\n';
           }
         }
@@ -1120,9 +1127,11 @@
             }
             liParent = liParent.parentElement;
           }
-          if (!liIsThinking) {
-            var liText = allLi[li].textContent.trim();
-            if (liText.length > 0) {
+          var liText = allLi[li].textContent.trim();
+          if (liText.length > 0) {
+            if (liIsThinking) {
+              currentReasoning += '  - ' + liText + '\n';
+            } else {
               currentContent += '  - ' + liText + '\n';
             }
           }
@@ -1132,6 +1141,21 @@
         // loading spinners as whitespace/punctuation.
         var trimmedContent = currentContent.trim();
         var trimmedLast = lastContent.trim();
+        var trimmedReasoning = currentReasoning.trim();
+        var trimmedLastReasoning = (lastReasoning || '').trim();
+
+        // Emit reasoning delta if new thinking text arrived.
+        if (trimmedReasoning.length > trimmedLastReasoning.length) {
+          var reasoningDelta = currentReasoning.substring((lastReasoning || '').length);
+          lastReasoning = currentReasoning;
+          stableCount = 0;
+          if (reasoningDelta.trim().length > 0) {
+            postResponse(requestId, 'streamChunk', {
+              chunk: { content: '', reasoning: reasoningDelta },
+            });
+            log('reasoning chunk: "' + reasoningDelta.trim().substring(0, 40) + '" (total: ' + trimmedReasoning.length + ' chars)');
+          }
+        }
 
         if (trimmedContent.length > trimmedLast.length) {
           // New real text arrived — send the delta.
