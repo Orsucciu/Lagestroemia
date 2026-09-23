@@ -857,16 +857,36 @@
           log('Received pending request: ' + req.type + ' (id: ' + req.requestId + ')');
 
           if (req.type === 'sendChat') {
-            // Forward the full messages array, model, and all OpenAI
-            // parameters (tools, temperature, etc.) to sendChatWithRetry,
-            // which uses fetch() + parseSSE — the same-origin captcha-
-            // solved path. The DOM-scrape path (lzSendMessageHTTP) is
-            // kept as a fallback for when fetch() fails (e.g. chat.z.ai
-            // changes their SSE shape and we need time to update the
-            // parser).
+            // Primary path: DOM-scrape (lzSendMessageHTTP).
             //
-            // The last user message is also extracted as `text` so we
-            // can fall back to the DOM path if fetch() rejects outright.
+            // This is the path the "test message" button uses, and it
+            // works because chat.z.ai's own frontend handles the
+            // captcha — the SDK loads automatically when the user
+            // sends a message through the textarea.
+            //
+            // The fetch() path (sendChatWithRetry) is more elegant
+            // and would let us forward tools/reasoning properly, but
+            // it requires solving the captcha programmatically. The
+            // Aliyun SDK only loads when chat.z.ai's own JS triggers
+            // it, which only happens via the UI send path. Until we
+            // figure out how to trigger the SDK load from a fetch-
+            // only context, the DOM-scrape path is the reliable one.
+            //
+            // Limitations of DOM-scrape (known, accepted):
+            //   - Only the last user message is sent (multi-turn
+            //     context is lost — the model sees only the latest
+            //     message). opencode will need to include prior
+            //     context in the latest message.
+            //   - tools / temperature / etc are not forwarded.
+            //   - reasoning_content is not surfaced (chat.z.ai's DOM
+            //     hides thinking in a blockquote that we skip).
+            //   - tool_calls are not emitted (DOM has no tool_calls).
+            //
+            // To re-enable the fetch path, replace the call below
+            // with sendChatWithRetry(...) and handle the captcha
+            // solving (probably by sending a dummy message through
+            // the UI first to trigger the SDK load).
+
             var userMessage = req.messages[req.messages.length - 1];
             var text = userMessage.content || '';
             if (typeof text !== 'string') {
@@ -878,73 +898,47 @@
               }
             }
 
-            // Build options from the request. native_host.py forwards
-            // these from the OpenAI-shaped body so opencode / Cline /
-            // Continue etc. can use tools, temperature, etc.
-            var sendOpts = {
-              thinking: !!(req.options && req.options.thinking),
-              tools: req.options && req.options.tools,
-              tool_choice: req.options && req.options.tool_choice,
-              temperature: req.options && req.options.temperature,
-              max_tokens: req.options && req.options.max_tokens,
-              top_p: req.options && req.options.top_p,
-              presence_penalty: req.options && req.options.presence_penalty,
-              frequency_penalty: req.options && req.options.frequency_penalty,
-              stop: req.options && req.options.stop,
-              seed: req.options && req.options.seed,
-              features: req.options && req.options.features,
-            };
-
-            console.log('[content] sendChat via fetch path — requestId=' + req.requestId +
-                        ', model=' + req.model + ', messages=' + req.messages.length +
-                        ', tools=' + (sendOpts.tools ? sendOpts.tools.length : 0));
-
-            // Stream chunks back to native_host.py via POST /_response.
-            // Each chunk: {content, reasoning, tool_calls?, finish_reason?}.
-            sendChatWithRetry(
-              req.messages,
-              req.model,
-              sendOpts,
-              function onChunk(chunk) {
-                postResponse(req.requestId, 'streamChunk', { chunk: chunk });
-              },
-              function onStatus(status) {
-                // Optional: surface status updates. We don't currently
-                // forward these to the HTTP client (would need a
-                // different message type), but logging helps debugging.
-                console.log('[content] status:', status);
-              }
-            ).then(function () {
-              postResponse(req.requestId, 'streamEnd', {});
-            }).catch(function (err) {
-              console.error('[content] fetch-path failed:', err.message, err.stack || '');
-              // Don't fall back to the DOM-scrape path — it has its own
-              // bugs (dropdown doesn't close, textbox selection is flaky
-              // on Svelte). Surface the real error to the caller instead
-              // so we can diagnose the actual fetch failure.
-              //
-              // If you DO want the fallback (e.g. chat.z.ai changes
-              // their SSE shape and fetch always fails), uncomment the
-              // block below.
-              /*
-              var msg = (err && err.message) || '';
-              var fallbackWorthy = /parse|JSON|network|fetch|HTTP 5/i.test(msg);
-              if (fallbackWorthy) {
-                console.warn('[content] falling back to DOM-scrape path');
-                try {
-                  window.lzSendMessageHTTP(text, req.requestId);
-                } catch (fallbackErr) {
-                  postResponse(req.requestId, 'error', {
-                    error: 'Primary fetch path failed (' + msg + ') and DOM fallback threw: ' + fallbackErr.message
-                  });
+            // If the caller sent multiple messages, concatenate them
+            // into the text we send. This is a poor man's multi-turn:
+            // the model sees the whole conversation as one message,
+            // but at least it has the context. opencode will work
+            // for simple Q&A but tool-calling agent loops may break
+            // because the model can't see prior tool results.
+            if (req.messages.length > 1) {
+              var allText = [];
+              for (var mi = 0; mi < req.messages.length; mi++) {
+                var m = req.messages[mi];
+                var role = m.role || 'user';
+                var content = m.content;
+                if (typeof content !== 'string') {
+                  content = '';
+                  if (Array.isArray(m.content)) {
+                    for (var cp = 0; cp < m.content.length; cp++) {
+                      if (m.content[cp].type === 'text') {
+                        content += m.content[cp].text;
+                      }
+                    }
+                  }
                 }
-                return;
+                if (role === 'system') {
+                  allText.push('[System]: ' + content);
+                } else if (role === 'user') {
+                  allText.push('[User]: ' + content);
+                } else if (role === 'assistant') {
+                  allText.push('[Assistant]: ' + content);
+                } else if (role === 'tool') {
+                  allText.push('[Tool result]: ' + content);
+                }
               }
-              */
-              postResponse(req.requestId, 'error', {
-                error: 'fetch-path failed: ' + ((err && err.message) || 'unknown error')
-              });
-            });
+              text = allText.join('\n\n');
+              console.log('[content] Multi-turn: concatenated ' + req.messages.length +
+                          ' messages into one text block (' + text.length + ' chars)');
+            }
+
+            console.log('[content] sendChat via DOM-scrape path — requestId=' + req.requestId +
+                        ', model=' + req.model + ', text="' + text.substring(0, 40) + '..."');
+
+            window.lzSendMessageHTTP(text, req.requestId);
           }
         })
         .catch(function(err) {
