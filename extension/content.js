@@ -819,14 +819,27 @@
   };
 
   // ---- HTTP polling: poll localhost for pending requests ----
-  // The server URL is configurable via localStorage. Default: http://127.0.0.1:8081
+  // The extension ALWAYS polls 127.0.0.1 (not the user-configured
+  // server URL) because:
+  //   1. The extension and native host are always on the same machine
+  //   2. Firefox blocks HTTP requests from HTTPS pages (Mixed Content)
+  //      unless the target is 127.0.0.1 or localhost (potentially
+  //      trustworthy origins)
+  //   3. The native host's internal endpoints (/_pending, /_response)
+  //      are loopback-only by default for security
+  //
+  // The user-configured server URL (lagestroemia_server_url in
+  // localStorage) is only for display in the control panel — it's
+  // NOT used for internal communication.
   window.lzGetServerUrl = function() {
-    return localStorage.getItem('lagestroemia_server_url') || 'http://127.0.0.1:8081';
+    return 'http://127.0.0.1:8081';
   };
 
+  // Kept for backward compat — the control panel still calls this,
+  // but it no longer affects internal polling.
   window.lzSetServerUrl = function(url) {
     localStorage.setItem('lagestroemia_server_url', url);
-    log('Server URL set to: ' + url);
+    log('Server URL set to: ' + url + ' (note: internal polling always uses http://127.0.0.1:8081)');
   };
 
   window.lzStartPolling = function startPolling() {

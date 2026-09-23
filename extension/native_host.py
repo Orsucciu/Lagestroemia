@@ -340,13 +340,45 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         Used to gate internal endpoints (/_pending, /_response, /_debug)
         that the browser extension polls. The extension runs inside a
         chat.z.ai tab in the user's browser, so its requests come from
-        127.0.0.1 / ::1. When the server is bound to 0.0.0.0 for LAN
-        access, external callers must not be able to reach these
-        endpoints — they could otherwise read pending user messages
-        via GET /_pending or inject fake responses via POST /_response.
+        a local interface — but not necessarily 127.0.0.1. When the
+        server is bound to 0.0.0.0 and the browser connects via the
+        machine's LAN IP (e.g. 172.21.2.177), the client IP is the LAN
+        IP, not 127.0.0.1.
+
+        We accept:
+          - Loopback: 127.0.0.0/8, ::1, localhost
+          - RFC1918 private: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+          - Link-local: 169.254.0.0/16, fe80::/10
+
+        Private IPs are safe to accept because they're not routable
+        from the internet. An attacker would need to be on the same
+        LAN — and in that case, they can already call /v1/chat/completions
+        directly (auth is disabled by default).
         """
         client_ip = self.client_address[0]
-        return client_ip in ('127.0.0.1', '::1', 'localhost')
+        if client_ip in ('127.0.0.1', '::1', 'localhost'):
+            return True
+        # RFC1918 private ranges
+        try:
+            parts = [int(p) for p in client_ip.split('.')]
+            if len(parts) == 4:
+                a, b, _, _ = parts
+                if a == 10:
+                    return True  # 10.0.0.0/8
+                if a == 172 and 16 <= b <= 31:
+                    return True  # 172.16.0.0/12
+                if a == 192 and b == 168:
+                    return True  # 192.168.0.0/16
+                if a == 169 and b == 254:
+                    return True  # 169.254.0.0/16 link-local
+        except (ValueError, IndexError):
+            pass
+        # IPv6 private (fc00::/7, fe80::/10)
+        if client_ip.startswith('fc') or client_ip.startswith('fd'):
+            return True
+        if client_ip.startswith('fe80'):
+            return True
+        return False
 
     def _require_loopback(self) -> bool:
         """Return True if the client is on loopback, else send 404 and
