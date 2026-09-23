@@ -1076,6 +1076,39 @@
       var allAssistant = document.querySelectorAll('.chat-assistant');
       if (allAssistant.length > prevCount) {
         var latest = allAssistant[allAssistant.length - 1];
+
+        // Expand the "Thought Process" section if it's collapsed.
+        // chat.z.ai collapses the thinking section by default (the
+        // chevron has -rotate-90 class when collapsed). When collapsed,
+        // Svelte doesn't render the <blockquote> with the thinking
+        // text, so our scraper can't read it.
+        //
+        // We click the button to expand it. The blockquote then
+        // renders on the next Svelte tick. We skip scraping this
+        // cycle so the next poll (500ms later) picks up the expanded
+        // content.
+        var thinkingContainers = latest.querySelectorAll('.thinking-chain-container');
+        var expandedSomething = false;
+        for (var tc = 0; tc < thinkingContainers.length; tc++) {
+          var expandBtn = thinkingContainers[tc].querySelector('button');
+          if (expandBtn) {
+            // Check if collapsed: the chevron svg has -rotate-90 class.
+            var chevron = expandBtn.querySelector('svg[class*="rotate-90"]');
+            if (chevron) {
+              // It's collapsed — click to expand.
+              expandBtn.click();
+              expandedSomething = true;
+              log('Expanded thinking section #' + tc + ' — skipping scrape this cycle');
+            }
+          }
+        }
+        if (expandedSomething) {
+          // Svelte needs a moment to render the blockquote after
+          // the click. Skip scraping this cycle — the next poll
+          // (500ms later) will see the expanded thinking text.
+          return;
+        }
+
         var currentContent = '';
         var currentReasoning = '';
 
