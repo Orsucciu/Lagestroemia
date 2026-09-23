@@ -35,14 +35,25 @@ if (-not $PythonExe) {
 #
 # To restrict to loopback only (e.g. you're on a shared machine), edit
 # the wrapper to add:  set LAGESTROEMIA_HOST=127.0.0.1
+#
+# To use the FastAPI version (requires `pip install -r extension/requirements.txt`):
+#   1. Run: pip install -r extension\requirements.txt
+#   2. Uncomment the LAGESTROEMIA_USE_FASTAPI line below.
 $WrapperBat = Join-Path $ExtDir "native_host_wrapper.bat"
 @"
 @echo off
 REM Lagestroemia native host wrapper.
 REM
-REM Defaults: binds to 0.0.0.0:8081, no auth. Works for WSL2 and
-REM same-machine use. To restrict to loopback only, uncomment:
+REM Defaults: binds to 0.0.0.0:8081, no auth, stdlib HTTP server.
+REM Works for WSL2 and same-machine use.
+REM
+REM To restrict to loopback only, uncomment:
 REM set LAGESTROEMIA_HOST=127.0.0.1
+REM
+REM To use the FastAPI version (better protocol compliance, /docs):
+REM   1. pip install -r extension\requirements.txt
+REM   2. Uncomment the line below:
+REM set LAGESTROEMIA_USE_FASTAPI=1
 "$PythonExe" "$NativeHostPath"
 "@ | Set-Content $WrapperBat -Encoding ASCII
 

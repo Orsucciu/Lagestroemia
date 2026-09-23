@@ -1381,5 +1381,21 @@ def _install_signal_handlers():
 
 
 if __name__ == '__main__':
+    # Allow the user to opt into the FastAPI version by setting
+    # LAGESTROEMIA_USE_FASTAPI=1 in the wrapper. The stdlib version
+    # (this file) is the default — it works without any dependencies.
+    if os.environ.get('LAGESTROEMIA_USE_FASTAPI') == '1':
+        fastapi_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'native_host_fastapi.py')
+        if os.path.exists(fastapi_path):
+            print("[native] LAGESTROEMIA_USE_FASTAPI=1 — exec'ing native_host_fastapi.py",
+                  file=sys.stderr)
+            # Re-exec with the same argv. Python replaces this process.
+            os.execv(sys.executable, [sys.executable, fastapi_path] + sys.argv[1:])
+        else:
+            print(f"[native] LAGESTROEMIA_USE_FASTAPI=1 but {fastapi_path} not found",
+                  file=sys.stderr)
+            print("[native] Falling back to stdlib version.", file=sys.stderr)
+
     _install_signal_handlers()
     main()

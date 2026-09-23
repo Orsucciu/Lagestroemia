@@ -24,13 +24,24 @@ WRAPPER_SCRIPT="$EXT_DIR/native_host_wrapper.sh"
 #
 # To restrict to loopback only, edit the wrapper to add:
 #   export LAGESTROEMIA_HOST=127.0.0.1
+#
+# To use the FastAPI version:
+#   1. pip install -r extension/requirements.txt
+#   2. Uncomment the LAGESTROEMIA_USE_FASTAPI line below.
 cat > "$WRAPPER_SCRIPT" << EOF
 #!/usr/bin/env bash
 # Lagestroemia native host wrapper.
 #
-# Defaults: binds to 0.0.0.0:8081, no auth. Works for WSL2 and
-# same-machine use. To restrict to loopback only, uncomment:
+# Defaults: binds to 0.0.0.0:8081, no auth, stdlib HTTP server.
+# Works for WSL2 and same-machine use.
+#
+# To restrict to loopback only, uncomment:
 # export LAGESTROEMIA_HOST=127.0.0.1
+#
+# To use the FastAPI version (better protocol compliance, /docs):
+#   1. pip install -r extension/requirements.txt
+#   2. Uncomment the line below:
+# export LAGESTROEMIA_USE_FASTAPI=1
 exec python3 "$NATIVE_HOST_PATH"
 EOF
 chmod +x "$WRAPPER_SCRIPT"

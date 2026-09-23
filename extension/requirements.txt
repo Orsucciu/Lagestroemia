@@ -1,0 +1,18 @@
+# Lagestroemia native host — optional FastAPI dependencies.
+# Install with: pip install -r extension/requirements.txt
+#
+# These are only needed if you want to use native_host_fastapi.py
+# instead of the stdlib native_host.py. The stdlib version works
+# without any dependencies.
+#
+# To switch to the FastAPI version, set LAGESTROEMIA_USE_FASTAPI=1
+# in the wrapper script (native_host_wrapper.bat / .sh).
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+
+# sse-starlette is not needed — we use StreamingResponse with
+# manual SSE framing for simplicity. If you want to switch to
+# sse-starlette, uncomment:
+# sse-starlette>=1.8.0
